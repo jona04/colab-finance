@@ -1,0 +1,26 @@
+{
+  "lib/openzeppelin-contracts": {
+    "tag": {
+      "name": "v5.0.2",
+      "rev": "dbb6104ce834628e473d2173bbc9d47f81a9eec3"
+    }
+  },
+  "lib/swap-router-contracts": {
+    "tag": {
+      "name": "v1.1.0",
+      "rev": "8fe4f086cee7c08f0bdb6ebe20c9ab615921c65f"
+    }
+  },
+  "lib/v3-core": {
+    "tag": {
+      "name": "v1.0.0",
+      "rev": "e3589b192d0be27e100cd0daaf6c97204fdb1899"
+    }
+  },
+  "lib/v3-periphery": {
+    "tag": {
+      "name": "v1.0.0",
+      "rev": "464a8a49611272f7349c970e0fadb7ec1d3c1086"
+    }
+  }
+}

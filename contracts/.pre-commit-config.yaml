@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: forge-fmt
+        name: forge fmt
+        entry: bash -lc "forge fmt --check"
+        language: system
+      - id: solhint
+        name: solhint
+        entry: bash -lc "npx solhint 'src/**/*.sol'"
+        language: system
+      - id: slither-quick
+        name: slither quick
+        entry: bash -lc "slither . --print human-summary || true"
+        language: system

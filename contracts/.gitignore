@@ -1,0 +1,17 @@
+# Foundry / build
+out/
+cache/
+broadcast/
+
+# Ambiente
+.env
+.env.*
+!.env.example
+
+# Node (se usar para scripts auxiliares)
+node_modules/
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/

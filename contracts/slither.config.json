@@ -1,0 +1,7 @@
+{
+  "detectors_to_exclude": [
+    "low-level-calls",
+    "reentrancy-events"
+  ],
+  "filter_paths": "lib|out|script|test"
+}
