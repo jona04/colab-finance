@@ -24,7 +24,7 @@ def main():
     env["LOWER_TICK"] = str(args.lower)
     env["UPPER_TICK"] = str(args.upper)
     env["VAULT_ADDRESS"] = s.vault
-    env["PRIVATE_KEY"] = env.get("PRIVATE_KEY")
+    env["PRIVATE_KEY"] = s.private_key
     env["RPC_SEPOLIA"] = s.rpc_url
     
     if not args.execute:

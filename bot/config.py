@@ -14,6 +14,7 @@ class Settings:
     max_twap_dev_ticks: int
     min_cooldown: int
     check_interval: int
+    private_key: str
 
 def get_settings() -> Settings:
     return Settings(
@@ -25,4 +26,5 @@ def get_settings() -> Settings:
         max_twap_dev_ticks=int(os.environ.get("MAX_TWAP_DEVIATION_TICKS", "50")),
         min_cooldown=int(os.environ.get("MIN_COOLDOWN", "1800")),
         check_interval=int(os.environ.get("CHECK_INTERVAL", "30")),
+        private_key=str(os.environ.get("PRIVATE_KEY"))   
     )
