@@ -168,30 +168,40 @@ contract SingleUserVault is ISingleUserVault, ReentrancyGuard {
         _validateTickSpacing(lower, upper);
         _ensureTwapOk();
 
-        // Collect any fees owed first (static value is used off-chain; on-chain here is the actual claim).
-        NFPM.CollectParams memory cparams = NFPM.CollectParams({
+        // 1) collect fees "pendentes" (antes do decrease)
+        NFPM.CollectParams memory c1 = NFPM.CollectParams({
             tokenId: positionTokenId,
             recipient: address(this),
             amount0Max: type(uint128).max,
             amount1Max: type(uint128).max
         });
-        (uint fees0, uint fees1) = NFPM(nfpm).collect(cparams);
+        (uint256 fees0, uint256 fees1) = NFPM(nfpm).collect(c1);
 
-        // Close prior liquidity completely.
-        (,,,,, int24 tickLower, int24 tickUpper, uint128 liquidity,,,,) =
-            NFPM(nfpm).positions(positionTokenId);
-        if (liquidity > 0) {
+        // 2) decreaseLiquidity total
+        (, , , , , int24 prevLower, int24 prevUpper, uint128 liq, , , , ) = NFPM(nfpm).positions(positionTokenId);
+        if (liq > 0) {
             NFPM.DecreaseLiquidityParams memory dl = NFPM.DecreaseLiquidityParams({
                 tokenId: positionTokenId,
-                liquidity: liquidity,
+                liquidity: liq,
                 amount0Min: 0,
                 amount1Min: 0,
                 deadline: block.timestamp + 900
             });
             NFPM(nfpm).decreaseLiquidity(dl);
+
+            // 3) collect novamente para limpar os tokensOwed gerados pelo decrease
+            NFPM.CollectParams memory c2 = NFPM.CollectParams({
+                tokenId: positionTokenId,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            });
+            (uint256 add0, uint256 add1) = NFPM(nfpm).collect(c2);
+            fees0 += add0;
+            fees1 += add1;
         }
 
-        // Burn the tokenId if liquidity is zero (keeps state clean).
+        // 4) agora pode burn (token fica "cleared")
         NFPM(nfpm).burn(positionTokenId);
 
         // Mint new range using all idle balances.
