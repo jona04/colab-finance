@@ -2,20 +2,21 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SingleUserVault} from "../../src/core/SingleUserVault.sol";
-import {IUniV3PoolMinimal} from "../../src/interfaces/IUniV3PoolMinimal.sol";
-import {INonfungiblePositionManagerMinimal as NFPM} from "../../src/interfaces/INonfungiblePositionManagerMinimal.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { SingleUserVault } from "../../src/core/SingleUserVault.sol";
+import { IUniV3PoolMinimal } from "../../src/interfaces/IUniV3PoolMinimal.sol";
+import { INonfungiblePositionManagerMinimal as NFPM } from
+    "../../src/interfaces/INonfungiblePositionManagerMinimal.sol";
 
 /// @dev Minimal pool swap interface (Uniswap v3 core).
 interface IUniV3PoolSwap {
     function swap(
         address recipient,
         bool zeroForOne,
-        int256 amountSpecified,
+        int amountSpecified,
         uint160 sqrtPriceLimitX96,
         bytes calldata data
-    ) external returns (int256, int256);
+    ) external returns (int, int);
 }
 
 /// @title Fork test: open, swap for fees, and rebalance
@@ -57,11 +58,11 @@ contract Fork_BaseSepolia_Rebalance is Test {
         int24 spacing = p.tickSpacing();
 
         // Seed vault balances (deal cheatcode adjusts ERC20 storage directly)
-        deal(token0, address(vault), 1_000e18);
-        deal(token1, address(vault), 1_000e18);
+        deal(token0, address(vault), 1000e18);
+        deal(token1, address(vault), 1000e18);
 
         // Build a small range around current tick
-        (, int24 spotTick, , , , , ) = p.slot0();
+        (, int24 spotTick,,,,,) = p.slot0();
         int24 lower = (spotTick / spacing - 2) * spacing;
         int24 upper = (spotTick / spacing + 2) * spacing;
 
@@ -72,9 +73,9 @@ contract Fork_BaseSepolia_Rebalance is Test {
         // Swap 1e15 of token0 -> token1.
         IUniV3PoolSwap(address(p)).swap(
             address(this),
-            true,                // zeroForOne: token0 -> token1
-            int256(1e15),        // amountSpecified (exactIn)
-            0,                   // no price limit
+            true, // zeroForOne: token0 -> token1
+            int(1e15), // amountSpecified (exactIn)
+            0, // no price limit
             abi.encode(token0, token1)
         );
 
@@ -93,19 +94,20 @@ contract Fork_BaseSepolia_Rebalance is Test {
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         bool found;
-        uint256 fees0;
-        uint256 fees1;
+        uint fees0;
+        uint fees1;
 
-        for (uint256 i = 0; i < logs.length; i++) {
+        for (uint i = 0; i < logs.length; i++) {
             if (logs[i].emitter == address(vault) && logs[i].topics[0] == topic0) {
                 // data = abi.encode(lower, upper, fees0, fees1) sem os tópicos indexados
                 // No contrato, lower/upper são int24 e fees são uint256; para simplicidade,
                 // faz-se um decode parcial pegando apenas as duas últimas words (fees0, fees1).
                 // Layout: int24 lower (padded) | int24 upper (padded) | fees0 | fees1
-                (int24 l, int24 u, uint256 f0, uint256 f1) =
-                    abi.decode(logs[i].data, (int24, int24, uint256, uint256));
+                (int24 l, int24 u, uint f0, uint f1) =
+                    abi.decode(logs[i].data, (int24, int24, uint, uint));
                 // Silencia warning de variáveis não usadas
-                l; u;
+                l;
+                u;
                 fees0 = f0;
                 fees1 = f1;
                 found = true;
@@ -118,14 +120,16 @@ contract Fork_BaseSepolia_Rebalance is Test {
     }
 
     /// @notice Uniswap v3 swap callback. Pays the pool with token deltas.
-    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
+    function uniswapV3SwapCallback(int amount0Delta, int amount1Delta, bytes calldata data)
+        external
+    {
         // Pays positive deltas to the pool (msg.sender).
         (address token0, address token1) = abi.decode(data, (address, address));
         if (amount0Delta > 0) {
-            IERC20(token0).transfer(msg.sender, uint256(amount0Delta));
+            IERC20(token0).transfer(msg.sender, uint(amount0Delta));
         }
         if (amount1Delta > 0) {
-            IERC20(token1).transfer(msg.sender, uint256(amount1Delta));
+            IERC20(token1).transfer(msg.sender, uint(amount1Delta));
         }
     }
 }

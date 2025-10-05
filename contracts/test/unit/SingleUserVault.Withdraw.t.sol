@@ -2,16 +2,19 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {SingleUserVault} from "../../src/core/SingleUserVault.sol";
-import {MockNFPM} from "../mocks/MockNFPM.sol";
-import {MockPool} from "../mocks/MockPool.sol";
-import {VaultErrors} from "../../src/errors/VaultErrors.sol";
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import { SingleUserVault } from "../../src/core/SingleUserVault.sol";
+import { MockNFPM } from "../mocks/MockNFPM.sol";
+import { MockPool } from "../mocks/MockPool.sol";
+import { VaultErrors } from "../../src/errors/VaultErrors.sol";
+import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /// @dev Simple mintable ERC20 for tests.
 contract MockERC20 is ERC20 {
-    constructor(string memory n, string memory s) ERC20(n, s) {}
-    function mint(address to, uint256 amt) external { _mint(to, amt); }
+    constructor(string memory n, string memory s) ERC20(n, s) { }
+
+    function mint(address to, uint amt) external {
+        _mint(to, amt);
+    }
 }
 
 /// @title WithdrawAll unit tests
@@ -52,18 +55,18 @@ contract SingleUserVault_Withdraw_Test is Test {
 
     function test_TransfersAllBalancesToOwner() public {
         // Deposita saldos no vault
-        t0.mint(address(vault), 1_000 ether);
+        t0.mint(address(vault), 1000 ether);
         t1.mint(address(vault), 500 ether);
 
-        uint256 pre0 = t0.balanceOf(owner);
-        uint256 pre1 = t1.balanceOf(owner);
+        uint pre0 = t0.balanceOf(owner);
+        uint pre1 = t1.balanceOf(owner);
 
         vm.prank(owner);
         vault.withdrawAll();
 
         assertEq(t0.balanceOf(address(vault)), 0);
         assertEq(t1.balanceOf(address(vault)), 0);
-        assertEq(t0.balanceOf(owner), pre0 + 1_000 ether);
+        assertEq(t0.balanceOf(owner), pre0 + 1000 ether);
         assertEq(t1.balanceOf(owner), pre1 + 500 ether);
     }
 }

@@ -2,18 +2,18 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SingleUserVault} from "../../src/core/SingleUserVault.sol";
-import {IUniV3PoolMinimal} from "../../src/interfaces/IUniV3PoolMinimal.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { SingleUserVault } from "../../src/core/SingleUserVault.sol";
+import { IUniV3PoolMinimal } from "../../src/interfaces/IUniV3PoolMinimal.sol";
 
 interface IUniV3PoolSwap {
     function swap(
         address recipient,
         bool zeroForOne,
-        int256 amountSpecified,
+        int amountSpecified,
         uint160 sqrtPriceLimitX96,
         bytes calldata data
-    ) external returns (int256, int256);
+    ) external returns (int, int);
 }
 
 contract Fork_BaseSepolia_FeesCollect_Static is Test {
@@ -45,19 +45,23 @@ contract Fork_BaseSepolia_FeesCollect_Static is Test {
         int24 spacing = p.tickSpacing();
 
         // Seed balances
-        deal(token0, address(vault), 2_000e18);
-        deal(token1, address(vault), 2_000e18);
+        deal(token0, address(vault), 2000e18);
+        deal(token1, address(vault), 2000e18);
 
         // Range around spot
-        (, int24 spotTick, , , , , ) = p.slot0();
+        (, int24 spotTick,,,,,) = p.slot0();
         int24 lower = (spotTick / spacing - 3) * spacing;
         int24 upper = (spotTick / spacing + 3) * spacing;
 
         vault.openInitialPosition(lower, upper);
 
         // Execute 2 small swaps to accrue fees
-        IUniV3PoolSwap(address(p)).swap(address(this), true,  int256(2e15), 0, abi.encode(token0, token1));
-        IUniV3PoolSwap(address(p)).swap(address(this), false, int256(2e15), 0, abi.encode(token0, token1));
+        IUniV3PoolSwap(address(p)).swap(
+            address(this), true, int(2e15), 0, abi.encode(token0, token1)
+        );
+        IUniV3PoolSwap(address(p)).swap(
+            address(this), false, int(2e15), 0, abi.encode(token0, token1)
+        );
 
         vm.warp(block.timestamp + 31 minutes);
 
@@ -69,16 +73,18 @@ contract Fork_BaseSepolia_FeesCollect_Static is Test {
         bytes32 topic0 = keccak256("Rebalanced(uint256,int24,int24,uint256,uint256)");
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
-        uint256 fees0;
-        uint256 fees1;
+        uint fees0;
+        uint fees1;
         bool found;
 
-        for (uint256 i = 0; i < logs.length; i++) {
+        for (uint i = 0; i < logs.length; i++) {
             if (logs[i].emitter == address(vault) && logs[i].topics[0] == topic0) {
-                (int24 l, int24 u, uint256 f0, uint256 f1) =
-                    abi.decode(logs[i].data, (int24, int24, uint256, uint256));
-                l; u;
-                fees0 = f0; fees1 = f1;
+                (int24 l, int24 u, uint f0, uint f1) =
+                    abi.decode(logs[i].data, (int24, int24, uint, uint));
+                l;
+                u;
+                fees0 = f0;
+                fees1 = f1;
                 found = true;
                 break;
             }
@@ -89,9 +95,11 @@ contract Fork_BaseSepolia_FeesCollect_Static is Test {
     }
 
     // Swap callback
-    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
+    function uniswapV3SwapCallback(int amount0Delta, int amount1Delta, bytes calldata data)
+        external
+    {
         (address token0, address token1) = abi.decode(data, (address, address));
-        if (amount0Delta > 0) IERC20(token0).transfer(msg.sender, uint256(amount0Delta));
-        if (amount1Delta > 0) IERC20(token1).transfer(msg.sender, uint256(amount1Delta));
+        if (amount0Delta > 0) IERC20(token0).transfer(msg.sender, uint(amount0Delta));
+        if (amount1Delta > 0) IERC20(token1).transfer(msg.sender, uint(amount1Delta));
     }
 }

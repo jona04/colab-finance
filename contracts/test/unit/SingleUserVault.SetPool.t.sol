@@ -2,10 +2,10 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {SingleUserVault} from "../../src/core/SingleUserVault.sol";
-import {MockNFPM} from "../mocks/MockNFPM.sol";
-import {MockPool} from "../mocks/MockPool.sol";
-import {VaultErrors} from "../../src/errors/VaultErrors.sol";
+import { SingleUserVault } from "../../src/core/SingleUserVault.sol";
+import { MockNFPM } from "../mocks/MockNFPM.sol";
+import { MockPool } from "../mocks/MockPool.sol";
+import { VaultErrors } from "../../src/errors/VaultErrors.sol";
 
 contract SingleUserVault_SetPool_Test is Test {
     SingleUserVault vault;
@@ -15,8 +15,8 @@ contract SingleUserVault_SetPool_Test is Test {
     function setUp() public {
         // O prank precisa cobrir as duas criações; use start/stop
         vm.startPrank(owner);
-        nfpm = new MockNFPM(address(0xFAcA0A));           // NFPM.factory() = A
-        vault = new SingleUserVault(address(nfpm));        // owner correto = 0xBEEF
+        nfpm = new MockNFPM(address(0xFAcA0A)); // NFPM.factory() = A
+        vault = new SingleUserVault(address(nfpm)); // owner correto = 0xBEEF
         vm.stopPrank();
     }
 

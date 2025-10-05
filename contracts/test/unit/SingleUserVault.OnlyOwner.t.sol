@@ -2,10 +2,10 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {SingleUserVault} from "../../src/core/SingleUserVault.sol";
-import {MockNFPM} from "../mocks/MockNFPM.sol";
-import {MockPool} from "../mocks/MockPool.sol";
-import {VaultErrors} from "../../src/errors/VaultErrors.sol";
+import { SingleUserVault } from "../../src/core/SingleUserVault.sol";
+import { MockNFPM } from "../mocks/MockNFPM.sol";
+import { MockPool } from "../mocks/MockPool.sol";
+import { VaultErrors } from "../../src/errors/VaultErrors.sol";
 
 contract SingleUserVault_OnlyOwner_Test is Test {
     SingleUserVault vault;

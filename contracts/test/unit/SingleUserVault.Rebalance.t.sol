@@ -2,12 +2,12 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {stdStorage, StdStorage} from "forge-std/StdStorage.sol";
+import { stdStorage, StdStorage } from "forge-std/StdStorage.sol";
 
-import {SingleUserVault} from "../../src/core/SingleUserVault.sol";
-import {MockNFPM} from "../mocks/MockNFPM.sol";
-import {MockPool} from "../mocks/MockPool.sol";
-import {VaultErrors} from "../../src/errors/VaultErrors.sol";
+import { SingleUserVault } from "../../src/core/SingleUserVault.sol";
+import { MockNFPM } from "../mocks/MockNFPM.sol";
+import { MockPool } from "../mocks/MockPool.sol";
+import { VaultErrors } from "../../src/errors/VaultErrors.sol";
 
 /// @title Rebalance unit tests
 /// @notice Valida os guards que disparam antes das interações com o NFPM.
@@ -37,18 +37,12 @@ contract SingleUserVault_Rebalance_Test is Test {
 
     /// @dev Marca a posição como "aberta" setando positionTokenId = 1 via stdstore (slot-safe).
     function _seedPositionOpened() internal {
-        _stdstore
-            .target(address(vault))
-            .sig(vault.positionTokenId.selector)
-            .checked_write(uint256(1));
+        _stdstore.target(address(vault)).sig(vault.positionTokenId.selector).checked_write(uint(1));
     }
 
     /// @dev Define lastRebalance via stdstore (slot-safe).
-    function _setLastRebalance(uint256 ts) internal {
-        _stdstore
-            .target(address(vault))
-            .sig(vault.lastRebalance.selector)
-            .checked_write(ts);
+    function _setLastRebalance(uint ts) internal {
+        _stdstore.target(address(vault)).sig(vault.lastRebalance.selector).checked_write(ts);
     }
 
     function test_Revert_WhenPositionNotInitialized() public {
@@ -99,10 +93,9 @@ contract SingleUserVault_Rebalance_Test is Test {
 
         // Sobrescreve o endereço da pool na storage do vault (somente para teste)
         // pool() getter → usar stdstore para achar o slot.
-        _stdstore
-            .target(address(vault))
-            .sig(vault.pool.selector)
-            .checked_write(uint256(uint160(address(newPool))));
+        _stdstore.target(address(vault)).sig(vault.pool.selector).checked_write(
+            uint(uint160(address(newPool)))
+        );
 
         // Bounds válidos (múltiplos de 60) para cair especificamente no TWAP guard
         vm.prank(owner);

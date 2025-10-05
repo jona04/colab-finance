@@ -2,10 +2,10 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {SingleUserVault} from "../../src/core/SingleUserVault.sol";
-import {MockNFPM} from "../mocks/MockNFPM.sol";
-import {MockPool} from "../mocks/MockPool.sol";
-import {VaultErrors} from "../../src/errors/VaultErrors.sol";
+import { SingleUserVault } from "../../src/core/SingleUserVault.sol";
+import { MockNFPM } from "../mocks/MockNFPM.sol";
+import { MockPool } from "../mocks/MockPool.sol";
+import { VaultErrors } from "../../src/errors/VaultErrors.sol";
 
 contract SingleUserVault_TickSpacing_Test is Test {
     SingleUserVault vault;
@@ -38,6 +38,6 @@ contract SingleUserVault_TickSpacing_Test is Test {
         vm.prank(owner);
         try vault.openInitialPosition(-120, -60) {
             // no-op: espera-se falha posteriormente na etapa de mint em testes de integração/fork
-        } catch {}
+        } catch { }
     }
 }

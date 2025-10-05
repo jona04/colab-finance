@@ -30,6 +30,7 @@
   - [CI (exemplo GitHub Actions)](#ci-exemplo-github-actions)
 - [Algoritmos (notas técnicas)](#algoritmos-notas-técnicas)
 - [Solucionando problemas](#solucionando-problemas)
+- [Cast CLI](#cast-cli)
 - [Licença](#licença)
 
 ---
@@ -71,12 +72,13 @@ Base (8453)
 - SwapRouter02: 0x2626664c2603336E57B271c5C0b26F421741e481  
 - WETH: 0x4200000000000000000000000000000000000006
 
-Base Sepolia (84532)  
+Sepolia (11155111)  
 - UniswapV3Factory: 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24  
-- NonfungiblePositionManager (NFPM): 0x27F971cb582BF9E50F397e4d29a5C7A34f11faA2  
+- NonfungiblePositionManager (NFPM): 0x1238536071E1c677A632429e3655c799b22cDA52
 - QuoterV2: 0xC5290058841028F1614F3A6F0F5816cAd0df5E27  
 - SwapRouter02: 0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4  
-- WETH: 0x4200000000000000000000000000000000000006
+- WETH: 0xfff9976782d46cc05630d1f6ebab18b2324d6b14
+- USDC: 0x1c7d4b196cb0c7b01d743fbc6116a902379c7238
 
 Observação: setPoolByFactory resolve o endereço da pool via NFPM.factory().getPool(tokenA, tokenB, fee).  
 setPoolOnce valida que a pool informada pertence ao mesmo Factory do NFPM.
@@ -98,7 +100,7 @@ setPoolOnce valida que a pool informada pertence ao mesmo Factory do NFPM.
 Crie .env (baseado no .env.example):
 
 PRIVATE_KEY=0xSEU_DEV_PRIVATE_KEY
-RPC_BASE_SEPOLIA=https://sepolia.base.org
+RPC_SEPOLIA=https://sepolia.base.org
 RPC_BASE=https://mainnet.base.org
 ETHERSCAN_API_KEY=chave_basescan
 NFPM_ADDRESS=0x27F971cb582BF9E50F397e4d29a5C7A34f11faA2
@@ -112,13 +114,13 @@ Exportar no shell também funciona: export VAR=....
 
 1) Deploy do vault (Base Sepolia)  
 forge script script/Deploy.s.sol:Deploy \
-  --rpc-url $RPC_BASE_SEPOLIA --broadcast --private-key $PRIVATE_KEY -vvv
+  --rpc-url $RPC_SEPOLIA --broadcast --private-key $PRIVATE_KEY -vvv
 
 2) Travar pool (direto)  
 export VAULT_ADDRESS=0xSEU_VAULT  
 export POOL_ADDRESS=0xPOOL  
 forge script script/SetPoolOnce.s.sol:SetPoolOnce \
-  --rpc-url $RPC_BASE_SEPOLIA --broadcast --private-key $PRIVATE_KEY -vvv
+  --rpc-url $RPC_SEPOLIA --broadcast --private-key $PRIVATE_KEY -vvv
 
 3) Enviar tokens para o vault  
 Transferir token0/token1 para o VAULT_ADDRESS.
@@ -127,17 +129,17 @@ Transferir token0/token1 para o VAULT_ADDRESS.
 export LOWER_TICK=-120  
 export UPPER_TICK=-60  
 forge script script/OpenInitialPosition.s.sol:OpenInitialPosition \
-  --rpc-url $RPC_BASE_SEPOLIA --broadcast --private-key $PRIVATE_KEY -vvv
+  --rpc-url $RPC_SEPOLIA --broadcast --private-key $PRIVATE_KEY -vvv
 
 5) Rebalance manual  
 export LOWER_TICK=-60  
 export UPPER_TICK=0  
 forge script script/RebalanceManual.s.sol:RebalanceManual \
-  --rpc-url $RPC_BASE_SEPOLIA --broadcast --private-key $PRIVATE_KEY -vvv
+  --rpc-url $RPC_SEPOLIA --broadcast --private-key $PRIVATE_KEY -vvv
 
 6) Inspecionar estado  
 export VAULT_ADDRESS=0xSEU_VAULT  
-forge script script/ViewState.s.sol:ViewState --rpc-url $RPC_BASE_SEPOLIA -vvvv
+forge script script/ViewState.s.sol:ViewState --rpc-url $RPC_SEPOLIA -vvvv
 
 ---
 
@@ -148,16 +150,16 @@ forge build
 forge fmt  
 forge test -vvv  
 forge test -vvv --match-path test/unit/*  
-forge test -vvv --fork-url $RPC_BASE_SEPOLIA --match-path test/fork/*  
+forge test -vvv --fork-url $RPC_SEPOLIA --match-path test/fork/*  
 cast call $VAULT_ADDRESS "owner()(address)"
 
 Make (atalhos)  
 build: forge build  
 fmt: forge fmt  
 test: forge test -vvv  
-fork-test: forge test -vvv --fork-url \$\$RPC_BASE_SEPOLIA  
-deploy-sepolia: forge script script/Deploy.s.sol:Deploy --rpc-url \$\$RPC_BASE_SEPOLIA --broadcast --private-key \$\$PRIVATE_KEY -vvv  
-view: forge script script/ViewState.s.sol:ViewState --rpc-url \$\$RPC_BASE_SEPOLIA -vvvv  
+fork-test: forge test -vvv --fork-url \$\$RPC_SEPOLIA  
+deploy-sepolia: forge script script/Deploy.s.sol:Deploy --rpc-url \$\$RPC_SEPOLIA --broadcast --private-key \$\$PRIVATE_KEY -vvv  
+view: forge script script/ViewState.s.sol:ViewState --rpc-url \$\$RPC_SEPOLIA -vvvv  
 gas: forge test --gas-report --match-path test/unit/*
 
 Scripts (forge script)  
@@ -190,15 +192,15 @@ forge test -vvv --match-path "test/unit/*.t.sol"
 forge test -vvv --match-path "test/unit/**/*.t.sol"
 
 ### Fork tests  
-export RPC_BASE_SEPOLIA="https://sepolia.base.org"
+export RPC_SEPOLIA="https://sepolia.base.org"
 export NFPM_ADDRESS="0x27F971cb582BF9E50F397e4d29a5C7A34f11faA2"
 export POOL_ADDRESS="0xSEU_ENDERECO_DA_POOL"
 
-forge test -vvv --fork-url "$RPC_BASE_SEPOLIA" --match-path "test/fork/*.t.sol"
+forge test -vvv --fork-url "$RPC_SEPOLIA" --match-path "test/fork/*.t.sol"
 
 ### Como rodar fork local  
-export RPC_BASE_SEPOLIA="https://sepolia.base.org"
-anvil --fork-url "$RPC_BASE_SEPOLIA" --chain-id 84532
+export RPC_SEPOLIA="https://sepolia.base.org"
+anvil --fork-url "$RPC_SEPOLIA" --chain-id 84532
 #### em outro terminal:
 forge test -vvv --rpc-url "http://127.0.0.1:8545" --match-path "test/fork/*.t.sol"
 
@@ -244,6 +246,134 @@ CI exemplo GitHub Actions
 - Verificação no BaseScan: forge verify-contract ...
 
 ---
+
+## Cast CLI
+
+> Atalhos para inspecionar e operar o vault diretamente pelo CLI `cast` (Foundry).  
+> Copiar e colar no terminal, ajustando variáveis conforme necessário.
+
+
+### Setup inicial
+```bash
+export RPC_SEPOLIA=https://sepolia.infura.io/v3/<SUA_INFURA_KEY>
+export PRIVATE_KEY=0xSUA_CHAVE_DEV
+export VAULT_ADDRESS=0xSEU_VAULT
+export POOL_ADDRESS=0xSUA_POOL
+```
+
+### Infos da pool
+
+```bash
+cast call $POOL_ADDRESS "fee()(uint24)" --rpc-url $RPC_SEPOLIA
+cast call $POOL_ADDRESS "tickSpacing()(int24)" --rpc-url $RPC_SEPOLIA
+cast call $POOL_ADDRESS "slot0()(uint160,int24,uint16,uint16,uint16,uint8,bool)" --rpc-url $RPC_SEPOLIA
+cast call $POOL_ADDRESS "token0()(address)" --rpc-url $RPC_SEPOLIA
+cast call $POOL_ADDRESS "token1()(address)" --rpc-url $RPC_SEPOLIA
+```
+
+### Get pool Sepolia
+
+```bash
+cast call 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24 \
+  "getPool(address,address,uint24)(address)" \
+  0xTOKEN_A \
+  0xTOKEN_B \
+  3000 \
+  --rpc-url $RPC_SEPOLIA
+```
+
+### Create pool Sepolia
+
+```bash
+
+```
+
+### Infos do vault
+
+```bash
+cast call $VAULT_ADDRESS "owner()(address)" --rpc-url $RPC_SEPOLIA
+cast call $VAULT_ADDRESS "pool()(address)" --rpc-url $RPC_SEPOLIA
+cast call $VAULT_ADDRESS "positionTokenId()(uint256)" --rpc-url $RPC_SEPOLIA
+cast call $VAULT_ADDRESS "currentRange()(int24,int24,uint128)" --rpc-url $RPC_SEPOLIA
+cast call $VAULT_ADDRESS "twapOk()(bool)" --rpc-url $RPC_SEPOLIA
+
+```
+
+### Saldos do vault
+
+```bash
+TOKEN0=$(cast call $POOL_ADDRESS "token0()(address)" --rpc-url $RPC_SEPOLIA)
+TOKEN1=$(cast call $POOL_ADDRESS "token1()(address)" --rpc-url $RPC_SEPOLIA)
+
+cast call $TOKEN0 "balanceOf(address)(uint256)" $VAULT_ADDRESS --rpc-url $RPC_SEPOLIA
+cast call $TOKEN1 "balanceOf(address)(uint256)" $VAULT_ADDRESS --rpc-url $RPC_SEPOLIA
+
+```
+
+
+### Transações manuais
+
+```bash
+# Travar pool uma vez
+cast send $VAULT_ADDRESS "setPoolOnce(address)" $POOL_ADDRESS \
+  --rpc-url $RPC_SEPOLIA --private-key $PRIVATE_KEY
+
+# Transferir token para o vault
+cast send $TOKEN0 "transfer(address,uint256)" $VAULT_ADDRESS 1000000000000000000 \
+  --rpc-url $RPC_SEPOLIA --private-key $PRIVATE_KEY
+
+# Abrir posição inicial
+cast send $VAULT_ADDRESS "openInitialPosition(int24,int24)" -120 -60 \
+  --rpc-url $RPC_SEPOLIA --private-key $PRIVATE_KEY
+
+# Rebalance manual
+cast send $VAULT_ADDRESS "rebalance(int24,int24)" -60 0 \
+  --rpc-url $RPC_SEPOLIA --private-key $PRIVATE_KEY
+
+```
+
+
+### Logs & eventos
+
+```bash
+# Última transação
+TX=0xHASH_DA_TX
+cast tx $TX --rpc-url $RPC_SEPOLIA --verbose
+
+# Buscar eventos Rebalanced
+TOPIC_REBALANCED=$(cast keccak "Rebalanced(uint256,int24,int24,uint256,uint256)")
+cast logs --from-block 0 --to-block latest \
+  --address $VAULT_ADDRESS --topics $TOPIC_REBALANCED \
+  --rpc-url $RPC_SEPOLIA
+
+```
+
+
+### Utilidades diversas
+
+```bash
+# Encode/Decode ABI
+cast abi-encode "rebalance(int24,int24)" -60 0
+cast abi-decode "(int24,int24,uint256,uint256)" 0x...
+
+# Conversões
+cast to-wei 1 ether
+cast from-wei 1000000000000000000
+cast keccak "Rebalanced(uint256,int24,int24,uint256,uint256)"
+
+```
+
+### Fluxo típico com cast no MVP
+
+- Setar pool (uma vez).
+- Transferir token0/token1 pro vault.
+- Abrir posição (via script OpenInitialPosition.s.sol ou diretamente com cast send se expuser método igual).
+- Checar currentRange e saldos.
+- Fazer swaps pequenos (pode usar um router ou a própria pool via swap (se souber fazer o callback)).
+- Rebalance (script ou cast send) e inspecionar evento Rebalanced.
+- ViewState para conferir tudo em uma tacada.
+
+--
 
 ## Licença
 
