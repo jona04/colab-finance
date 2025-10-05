@@ -1,2 +1,62 @@
-venv
-venv/*
+# --- Python basics ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+.wheelhouse/
+.coverage*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.ipynb_checkpoints/
+
+# --- Virtualenv ---
+venv/
+.envrc
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace
+
+# --- Logs / temp ---
+*.log
+logs/
+tmp/
+*.tmp
+
+# --- Project-specific (bot) ---
+bot/state.json
+bot/*.sqlite3
+bot/*.db
+bot/.cache/
+bot/.migrate/
+bot/strategy/examples/*.local.json
+
+# --- Secrets ---
+*.key
+*.pem
+*.cert
+.env
+.env.*
+.env.local
+.envrc
+
+# --- Node/npm (se usar algo depois) ---
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# --- Docker (se você dockerizar) ---
+docker/*.env
+docker/*.log

@@ -1,0 +1,56 @@
+[
+  {
+    "id": "range_follow_usdc",
+    "name": "Bidirectional Range Follower",
+    "active": true,
+    "description": "Keeps the vault fully allocated (100%) by tracking price above or below the current range, dynamically adjusting the new range with asymmetric distance parameters.",
+    "params": {
+      "near_pct": 0.1,
+      "far_pct": 7.0,
+      "rebalance_if_outside_pct": 1.0,
+      "rebalance_after_sec": 1800
+    }
+  },
+  {
+    "id": "time_based_recenter",
+    "name": "Time-Based Range Refresh",
+    "active": true,
+    "description": "If price stays outside the active range for too long, suggest reallocation using current side of liquidity (no swap).",
+    "params": {
+      "trigger_outside_pct": 0.5,
+      "outside_duration_sec": 1800
+    }
+  },
+  {
+    "id": "loss_avoidance_rebalance",
+    "name": "Loss-Aware Rebalance",
+    "active": true,
+    "description": "Tracks the entry price of the last position and warns if a rebalance would cause value loss due to opposite price movement.",
+    "params": {
+      "enable_loss_check": true,
+      "alert_threshold_pct": 1.0
+    }
+  },
+  {
+    "id": "volatility_adjust_width",
+    "name": "Dynamic Width Adjustment",
+    "active": true,
+    "description": "Dynamically adjusts the range width based on recent volatility.",
+    "params": {
+      "lookback_sec": 600,
+      "widen_if_vol_above_pct": 1.5,
+      "tighten_if_vol_below_pct": 0.4,
+      "adjust_factor": [1.5, 0.75]
+    }
+  },
+  {
+    "id": "profit_threshold_guard",
+    "name": "Fee Profit Filter",
+    "active": true,
+    "description": "Only triggers rebalance when fee gain exceeds minimum profit threshold after gas costs.",
+    "params": {
+      "min_fee_usd": 2.0,
+      "gas_usd_estimate": 0.5
+    }
+  }
+]
