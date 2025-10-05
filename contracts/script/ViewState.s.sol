@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Script.sol";
+import {UniV3MathCompat} from "../src/libs/UniV3MathCompat.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ISingleUserVault} from "../src/interfaces/ISingleUserVault.sol";
 import {INonfungiblePositionManagerMinimal as NFPM} from "../src/interfaces/INonfungiblePositionManagerMinimal.sol";
@@ -146,7 +147,18 @@ contract ViewState is Script {
             console2.log("pos liq:    ", uint256(posLiq));
             console2.log("tokensOwed0:", uint256(owed0));
             console2.log("tokensOwed1:", uint256(owed1));
+        
+
+            // ---- Position principal (amounts in-range) ----
+            (uint256 amt0, uint256 amt1) =
+                UniV3MathCompat.amountsInRangeView(pool, posLower, posUpper, posLiq);
+
+            console2.log("");
+            console2.log("=== Position principal (in-range amounts) ===");
+            _printAmount("amount0 in position", amt0, m0.decimals);
+            _printAmount("amount1 in position", amt1, m1.decimals);
         }
+
     }
 
     // ========= Helpers (internos; sem address(this)) =========
@@ -174,9 +186,11 @@ contract ViewState is Script {
 
     function _printAmount(string memory label, uint256 raw, uint8 decimals_) internal pure {
         console2.log(string(abi.encodePacked(label, " (raw): ")), raw);
+        uint8 places = decimals_ >= 9 ? 8 : 4;
+        uint256 scale = 10 ** places;
         uint256 denom = 10 ** decimals_;
-        uint256 intPart = denom == 0 ? raw : raw / denom;
-        uint256 frac = denom == 0 ? 0 : (raw % denom) * 10_000 / denom; // 4 casas
+        uint256 intPart = raw / denom;
+        uint256 frac = (raw % denom) * scale / denom;
         console2.log(string(abi.encodePacked(label, " (human): ")), intPart, ".", frac);
     }
 
