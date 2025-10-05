@@ -4,6 +4,7 @@ used by strategy evaluation (pct_outside, out_since, spot_price, entry_price, vo
 """
 
 import time
+import json
 from dataclasses import dataclass, asdict
 from decimal import Decimal, getcontext
 from typing import Dict, Any
@@ -15,6 +16,17 @@ getcontext().prec = 80
 Q96 = Decimal(2) ** 96
 
 @dataclass
+class VaultSnapshot:
+    usd_value: float
+    delta_usd: float
+    baseline_usd: float
+    token0_idle: float
+    token1_idle: float
+    token0_in_pos: float
+    token1_in_pos: float
+    spot_price: float
+    
+@dataclass
 class VaultObservation:
     tick: int
     lower: int
@@ -22,7 +34,7 @@ class VaultObservation:
     spacing: int
 
     spot_price: float                 # token1 per token0 (e.g., ETH per USDC or vice-versa depending on order)
-    pct_outside: float
+    pct_outside_tick: float
     out_of_range: bool
     out_since: float
 
@@ -40,9 +52,10 @@ class VaultObserver:
     High-level observer that uses Chain to read on-chain state and derive strategy metrics.
     """
 
-    def __init__(self, chain: Chain, state_file: str = "state.json"):
+    def __init__(self, chain: Chain, state_path: str = "bot/state.json"):
         self.chain = chain
-        self.state = StateManager(state_file)
+        self.state_path = state_path
+        self.state = self._load_state()
         self._price_series = []  # rolling list for simple vol calc
 
         # cache pool meta
@@ -51,6 +64,15 @@ class VaultObserver:
     # ---------------------
     # helpers
     # ---------------------
+
+    @staticmethod
+    def _pct_from_dtick(d_ticks: int) -> float:
+        """
+        Exact % distance implied by tick difference using Uniswap base: (1.0001^|d| - 1)*100.
+        This is directionless magnitude in ETH/USDC terms.
+        """
+        factor = pow(1.0001, abs(d_ticks))
+        return (factor - 1.0) * 100.0
 
     def _sqrtPriceX96_to_price(self, sqrtP: int) -> Decimal:
         """
@@ -80,6 +102,69 @@ class VaultObserver:
         return float((var ** 0.5) * 100.0)
 
     # ---------------------
+    # price/tick helpers
+    # ---------------------
+
+    @staticmethod
+    def _price_token1_per_token0_from_tick(tick: int) -> float:
+        """
+        Uniswap v3 canonical mapping:
+        price(token1/token0) = 1.0001 ^ tick
+        """
+        return float(pow(1.0001, tick))
+
+    @classmethod
+    def _price_token0_per_token1_from_tick(cls, tick: int) -> float:
+        """
+        Inverse price for convenience:
+        price(token0/token1) = 1 / price(token1/token0)
+        """
+        p = cls._price_token1_per_token0_from_tick(tick)
+        return float("inf") if p == 0.0 else (1.0 / p)
+
+    def _price_token1_per_token0_from_tick_scaled(self, tick: int) -> float:
+        """
+        Uniswap v3 mapping with decimals:
+        price(token1/token0) = 1.0001^tick * 10^(dec0 - dec1)
+        """
+        dec0, dec1 = self._meta["dec0"], self._meta["dec1"]
+        base = pow(1.0001, tick)
+        scale = pow(10.0, dec0 - dec1)  # e.g., 10^(6-18) = 1e-12 for USDC/WETH
+        return base * scale
+
+    def _price_token0_per_token1_from_tick_scaled(self, tick: int) -> float:
+        """
+        Inverse price with decimals adjustment:
+        price(token0/token1) = 1 / price(token1/token0)
+        """
+        p = self._price_token1_per_token0_from_tick_scaled(tick)
+        return float("inf") if p == 0.0 else (1.0 / p)
+
+    def prices_from_tick(self, tick: int) -> dict:
+        """
+        Returns both price views for a given tick, already scaled by decimals:
+        - p_t1_t0: token1/token0 (ETH/USDC)
+        - p_t0_t1: token0/token1 (USDC/ETH)
+        """
+        p_t1_t0 = self._price_token1_per_token0_from_tick_scaled(tick)
+        p_t0_t1 = float("inf") if p_t1_t0 == 0.0 else (1.0 / p_t1_t0)
+        return {"tick": tick, "p_t1_t0": p_t1_t0, "p_t0_t1": p_t0_t1}
+
+    # -------------------------------
+    # Persistence helpers
+    # -------------------------------
+    def _load_state(self) -> Dict[str, Any]:
+        try:
+            with open(self.state_path, "r") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def _save_state(self):
+        with open(self.state_path, "w") as f:
+            json.dump(self.state, f, indent=2)
+            
+    # ---------------------
     # public API
     # ---------------------
 
@@ -101,32 +186,32 @@ class VaultObserver:
         self._price_series = self._price_series[-100:]
         vol_pct = self._simple_vol(window=20)
 
-        # in/out of range and pct outside
+        # in/out of range and % outside (tick-based and price-based)
         out_of_range = tick < lower or tick >= upper
+
+        # tick-based magnitude
         if out_of_range:
-            if tick < lower:
-                # distance below lower in percentage (approx with ticks difference / tick magnitude)
-                pct_outside = abs((lower - tick) / max(1, abs(tick))) * 100.0
-            else:
-                pct_outside = abs((tick - upper) / max(1, abs(tick))) * 100.0
+            d_ticks = (lower - tick) if tick < lower else (tick - upper)
+            pct_outside_tick = self._pct_from_dtick(d_ticks)
         else:
-            pct_outside = 0.0
+            d_ticks = 0
+            pct_outside_tick = 0.0
 
         # manage out_since persisted
         out_since = self.state.get("out_since", 0)
         if out_of_range and not out_since:
             out_since = time.time()
-            self.state.set("out_since", out_since)
+            self.state["out_since"] = out_since
         elif not out_of_range and out_since:
             out_since = 0
-            self.state.set("out_since", 0)
+            self.state["out_since"] = 0
 
         # ensure entry_price exists after the *first open*
         entry_price = self.state.get("entry_price", None)
         token_id = self.chain.vault_state()["tokenId"]
         if token_id != 0 and entry_price is None:
             # use current spot as baseline entry for MVP
-            self.state.set("entry_price", spot_price)
+            self.state["entry_price"] = spot_price
             entry_price = spot_price
 
         # fees (callStatic)
@@ -135,16 +220,23 @@ class VaultObserver:
             fees0, fees1 = self.chain.call_static_collect(token_id, self.chain.vault.address)
 
         # quick USD-estimate: assume token0 is USDC (6 decimals) and token1 is ETH priced in token0 units.
-        # If your pair differs, adapt here or fetch a price oracle.
-        fees_usd = float(fees0 / (10 ** self._meta["dec0"])) + float(fees1 / (10 ** self._meta["dec1"])) * spot_price
-
+        # spot_price = token1/token0 (ETH por USDC) -> USD por ETH = 1 / spot_price
+        price_usd_per_token1 = float("inf") if spot_price == 0 else (1.0 / spot_price)
+        
+        fees_usd = (
+            float(fees0) / (10 ** self._meta["dec0"])
+            + (float(fees1) / (10 ** self._meta["dec1"])) * price_usd_per_token1
+        )
+        fees0_human = float(fees0) / (10 ** self._meta["dec0"])
+        fees1_human = float(fees1) / (10 ** self._meta["dec1"])
+        
         obs = VaultObservation(
             tick=tick,
             lower=lower,
             upper=upper,
             spacing=spacing,
             spot_price=spot_price,
-            pct_outside=pct_outside,
+            pct_outside_tick=pct_outside_tick,
             out_of_range=out_of_range,
             out_since=out_since,
             volatility_pct=vol_pct,
@@ -153,14 +245,123 @@ class VaultObserver:
             uncollected_fees_token1=fees1,
             uncollected_fees_usd=fees_usd,
         )
-        return asdict(obs)
+        
+        prices_block = {
+            "current": self.prices_from_tick(tick),
+            "lower": self.prices_from_tick(lower),
+            "upper": self.prices_from_tick(upper),
+        }
+        
+        # Which side of the range?
+        if out_of_range:
+            if tick < lower:
+                range_side = "below"
+                # compare current to LOWER boundary
+                # ETH/USDC grows when tick grows
+                pct_out_eth_usdc = (prices_block["lower"]["p_t1_t0"] / prices_block["current"]["p_t1_t0"] - 1.0) * 100.0
+                # USDC/ETH moves inversely -> symmetrical magnitude but compute explicitly
+                pct_out_usdc_eth = (prices_block["current"]["p_t0_t1"] / prices_block["lower"]["p_t0_t1"] - 1.0) * 100.0
+            else:
+                range_side = "above"
+                # compare current to UPPER boundary
+                pct_out_eth_usdc = (prices_block["current"]["p_t1_t0"] / prices_block["upper"]["p_t1_t0"] - 1.0) * 100.0
+                pct_out_usdc_eth = (prices_block["upper"]["p_t0_t1"] / prices_block["current"]["p_t0_t1"] - 1.0) * 100.0
+        else:
+            range_side = "inside"
+            pct_out_eth_usdc = 0.0
+            pct_out_usdc_eth = 0.0
+        
+        # Sorted range views by PRICE (not by tick), to avoid confusion on the UI
+        p0_low = prices_block["lower"]["p_t0_t1"]   # USDC/ETH at tickLower
+        p0_up  = prices_block["upper"]["p_t0_t1"]   # USDC/ETH at tickUpper
+        p1_low = prices_block["lower"]["p_t1_t0"]   # ETH/USDC at tickLower
+        p1_up  = prices_block["upper"]["p_t1_t0"]   # ETH/USDC at tickUpper
+
+        range_prices = {
+            "usdc_per_eth_min": min(p0_low, p0_up),
+            "usdc_per_eth_max": max(p0_low, p0_up),
+            "eth_per_usdc_min": min(p1_low, p1_up),
+            "eth_per_usdc_max": max(p1_low, p1_up),
+        }
+
+        result = asdict(obs)
+        result["prices"] = prices_block
+        result["fees_human"] = {
+            "token0": fees0_human,
+            "token1": fees1_human,
+            "sym0": self._meta["sym0"],
+            "sym1": self._meta["sym1"],
+        }
+        result["range_side"] = range_side
+        result["pct_outside_eth_per_usdc"] = pct_out_eth_usdc
+        result["pct_outside_usdc_per_eth"] = pct_out_usdc_eth
+        result["range_prices"] = range_prices
+        return result
+
+    def usd_snapshot(self) -> VaultSnapshot:
+        """
+        Computes real-time USD valuation of vault:
+        - Liquidity currently in range (token0/token1)
+        - Idle balances held in vault
+        - Tracks baseline_usd and delta_usd (PnL)
+        """
+        vstate = self.chain.vault_state()
+        dec0, dec1 = self._meta["dec0"], self._meta["dec1"]
+
+        # --- Get position amounts ---
+        amount0_pos, amount1_pos = self.chain.amounts_in_position_now(
+            vstate["lower"], vstate["upper"], vstate["liq"]
+        )
+
+        # --- Idle balances ---
+        erc0 = self.chain.erc20(self._meta["token0"])
+        erc1 = self.chain.erc20(self._meta["token1"])
+        bal0_idle = erc0.functions.balanceOf(self.chain.vault.address).call()
+        bal1_idle = erc1.functions.balanceOf(self.chain.vault.address).call()
+
+        # spot as token1/token0 (ETH per USDC)
+        sqrtP, _ = self.chain.slot0()
+        spot_t1_per_t0 = float(self._sqrtPriceX96_to_price(sqrtP))
+        # want USD per ETH (token0/token1) = inverse
+        price_usd_per_token1 = float("inf") if spot_t1_per_t0 == 0.0 else (1.0 / spot_t1_per_t0)
+        
+        # --- Normalize amounts ---
+        token0_idle = bal0_idle / (10 ** dec0)
+        token1_idle = bal1_idle / (10 ** dec1)
+        token0_in_pos = amount0_pos / (10 ** dec0)
+        token1_in_pos = amount1_pos / (10 ** dec1)
+
+        # --- USD estimation ---
+        total_usd = (
+            token0_idle + token0_in_pos
+            + (token1_idle + token1_in_pos) * price_usd_per_token1
+        )
+
+        baseline_usd = self.state.get("baseline_usd", None)
+        if baseline_usd is None:
+            baseline_usd = total_usd
+            self.state["baseline_usd"] = baseline_usd
+            self._save_state()
+
+        delta_usd = total_usd - baseline_usd
+
+        return VaultSnapshot(
+            usd_value=total_usd,
+            delta_usd=delta_usd,
+            baseline_usd=baseline_usd,
+            token0_idle=token0_idle,
+            token1_idle=token1_idle,
+            token0_in_pos=token0_in_pos,
+            token1_in_pos=token1_in_pos,
+            spot_price=price_usd_per_token1,
+        )
 
     def record_entry_price_on_rebalance(self, price: float) -> None:
         """
         Call this from your rebalance path (or just before suggesting a new range)
         to pin the current 'entry price' for loss-aware checks.
         """
-        self.state.set("entry_price", float(price))
+        self.state["entry_price"] = float(price)
 
     def pnl_vs_entry_usd(self, amount0_raw: int, amount1_raw: int) -> float:
         """

@@ -55,9 +55,31 @@ def main():
     while True:
         try:
             obs = observer.snapshot(twap_window=s.twap_window)
-            log_info(f"tick={obs['tick']} inRange={not obs['out_of_range']} twap_window={s.twap_window}s "
-                     f"fees≈${obs['uncollected_fees_usd']:.4f} vol={obs['volatility_pct']:.3f}%")
 
+            # preços em ambas visões
+            pr_cur = obs["prices"]["current"]
+            pr_low = obs["prices"]["lower"]
+            pr_upp = obs["prices"]["upper"]
+
+            log_info(
+                "PRICES  (token1/token0 = ETH/USDC | token0/token1 = USDC/ETH)\n"
+                f"  current: tick={pr_cur['tick']:,} | ETH/USDC={pr_cur['p_t1_t0']:.10f} | USDC/ETH={pr_cur['p_t0_t1']:.4f}\n"
+                f"  lower:   tick={pr_low['tick']:,} | ETH/USDC={pr_low['p_t1_t0']:.10f} | USDC/ETH={pr_low['p_t0_t1']:.4f}\n"
+                f"  upper:   tick={pr_upp['tick']:,} | ETH/USDC={pr_upp['p_t1_t0']:.10f} | USDC/ETH={pr_upp['p_t0_t1']:.4f}"
+            )
+
+            log_info(
+                f"STATE    inRange={not obs['out_of_range']} | "
+                f"pct_outside≈{obs['pct_outside']:.3f}% | twap_window={s.twap_window}s | "
+                f"fees≈${obs['uncollected_fees_usd']:.4f} | vol={obs['volatility_pct']:.3f}%"
+            )
+
+            snap = observer.usd_snapshot()
+            log_info(
+                f"USD      total≈${snap.usd_value:,.2f} | ΔUSD={snap.delta_usd:+.2f} | "
+                f"baseline=${snap.baseline_usd:,.2f} | USDC/ETH={snap.spot_price:.2f}"
+            )
+            
             signals = evaluate_all(strategies, obs)
             if signals:
                 for sig in signals:
@@ -65,6 +87,16 @@ def main():
                     if "lower" in sig and "upper" in sig:
                         msg += f" | lower={sig['lower']} upper={sig['upper']}"
                     log_warn(msg)
+                
+                # append signals to state.json
+                alerts = observer.state.get("alerts", [])
+                import time
+                for sig in signals:
+                    sig["time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+                alerts.extend(signals)
+                observer.state["alerts"] = alerts[-100:]  # keep last 100
+                observer._save_state()
+
             else:
                 log_info("No signals.")
 
