@@ -94,33 +94,29 @@ STRATEGIES_FILE="bot/strategy/examples/strategies.json"
 
 ```bash
 .
-├── bot
-│ ├── alerts.py
-│ ├── chain.py
-│ ├── config.py
-│ ├── exec.py
-│ ├── init.py
-│ ├── main.py
-│ ├── observer
-│ │ ├── init.py
-│ │ ├── state_manager.py
-│ │ └── vault_observer.py
-│ ├── requirements.txt
-│ ├── state.json
-│ ├── status.py
-│ ├── strategy
-│ │ ├── examples
-│ │ ├── init.py
-│ │ └── registry.py
-│ ├── telegram_client.py
-│ └── utils
-│ ├── formatters.py
-│ ├── init.py
-│ ├── log.py
-│ ├── math_univ3.py
-│ ├── ticks.py
-│ └── volatility.py
-└── state.json
+bot/
+├── main.py                 # Loop principal (observer + estratégias)
+├── status.py               # Snapshot único (CLI)
+├── exec.py                 # Executor manual (dry-run ou --execute)
+├── alerts.py               # Leitura dos alertas armazenados
+├── chain.py                # Acesso on-chain (Web3 + ABIs mínimos)
+├── config.py               # Leitura das variáveis de ambiente
+├── observer/
+│   ├── state_manager.py    # Persistência de estado local (JSON)
+│   └── vault_observer.py   # Núcleo de métricas e cálculos (ticks, preços, USD, fees)
+├── strategy/
+│   ├── registry.py         # Registro de estratégias e handlers
+│   └── examples/           # Arquivos JSON de estratégias
+├── utils/
+│   ├── log.py              # Logging colorido e estruturado
+│   ├── formatters.py       # Conversões e formatações de saída
+│   ├── math_univ3.py       # Helpers de Uniswap v3 (liquidez, sqrtPrice)
+│   ├── ticks.py            # Conversões e manipulação de ticks
+│   └── volatility.py       # Cálculo simplificado de volatilidade
+├── telegram_client.py      # (placeholder) integração Telegram — Fase 3
+├── requirements.txt
+└── state.json              # Estado persistido (baseline, entry_price, alerts)
+
 ```
 
 

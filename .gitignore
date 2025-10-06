@@ -42,6 +42,9 @@ bot/.cache/
 bot/.migrate/
 bot/.env
 bot/strategy/examples/*.local.json
+bot/*/__pycache__/
+bot/__pycache__/
+bot/__pycache__/*
 
 # --- Secrets ---
 *.key

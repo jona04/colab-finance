@@ -24,7 +24,7 @@ def range_follow_usdc(params, obs):
     near = params["near_pct"]
     far = params["far_pct"]
 
-    if obs["pct_outside"] < out_pct:
+    if obs["pct_outside_tick"] < out_pct:
         return {"trigger": False}
 
     # Above the current range (100% token1 = ETH)
@@ -42,7 +42,7 @@ def range_follow_usdc(params, obs):
 
     return {
         "trigger": True,
-        "reason": f"Price {side} range by {obs['pct_outside']:.2f}%",
+        "reason": f"Price {side} range by {obs['pct_outside_tick']:.2f}%",
         "action": "reallocate",
         "lower": new_lower,
         "upper": new_upper,
