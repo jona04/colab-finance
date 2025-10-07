@@ -35,7 +35,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from telegram import Update
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatType
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 )
@@ -47,6 +47,10 @@ from bot.strategy.registry import handlers
 from bot.utils.log import log_info, log_warn
 from decimal import Decimal, getcontext
 getcontext().prec = 60  # precisão boa para os cálculos de sqrt/amounts
+
+READ_ONLY = os.environ.get("READ_ONLY", "0").strip() in ("1", "true", "yes")
+REQUIRE_CHAT_ONLY = os.environ.get("REQUIRE_CHAT_ONLY", "0").strip() in ("1", "true", "yes")  # exige TELEGRAM_CHAT_ID
+BLOCK_DMS = os.environ.get("BLOCK_DMS", "0").strip() in ("1", "true", "yes") 
 
 def _erc20_meta(ch: Chain, addr: str):
     c = ch.erc20(addr)
@@ -99,30 +103,74 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, 
     
 def _allowed_chat(update: Update) -> bool:
     """
-    Returns True if the incoming update is authorized.
+    Authorization gate:
 
-    Priority:
-      1) TELEGRAM_CHAT_ID — exact match with update.effective_chat.id
-      2) ALLOWED_USER_IDS — comma-separated list of user IDs (strings)
+      1) TELEGRAM_CHAT_ID must match (group/channel/DM), if configured.
+      2) Otherwise allow if user is in ALLOWED_USER_IDS (from Settings).
+      3) If BLOCK_DM=true in Settings, reject private chats.
 
-    If neither is configured, returns False for safety.
+    If neither mechanism is configured, deny for safety.
     """
+    chat = update.effective_chat
+    user = update.effective_user
+
+    # 3) block DMs if requested
+    try:
+        if CTX.s.block_dm and chat and getattr(chat, "type", None) == ChatType.PRIVATE:
+            return False
+    except Exception:
+        pass
+
+    # 1) exact chat id match (still read from env – Telegram infra var)
     tgid = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    allow_users = [u.strip() for u in os.environ.get("ALLOWED_USER_IDS", "").split(",") if u.strip()]
+    if tgid and chat and str(chat.id) == str(tgid):
+        return True
 
-    # Prefer explicit chat ID gate (works for groups/channels/DM)
-    if tgid:
-        try:
-            if str(update.effective_chat.id) == str(tgid):
-                return True
-        except Exception:
-            pass
-
-    # Fallback: allow-list of individual users
-    if allow_users and update.effective_user:
-        return str(update.effective_user.id) in allow_users
+    # 2) per-user allow-list (Settings)
+    if CTX.s.allowed_user_ids and user:
+        return str(user.id) in CTX.s.allowed_user_ids
 
     return False
+
+
+def _validate_ticks(lower: int, upper: int, spacing: int):
+    """
+    Validates tick bounds:
+      - lower < upper
+      - both multiples of tickSpacing
+    Raises ValueError on invalid input.
+    """
+    if lower >= upper:
+        raise ValueError("lower must be < upper")
+    if lower % spacing != 0 or upper % spacing != 0:
+        raise ValueError(f"ticks must be multiples of spacing={spacing}")
+
+
+def _read_token_id_from_vault(ch: Chain) -> int:
+    """
+    Best-effort attempt to fetch the Uniswap V3 position tokenId from the vault.
+
+    Priority:
+      1) vault.tokenId()      (common naming)
+      2) vault.positionId()   (some projects)
+      3) ch.vault_state().get("tokenId")
+    Returns 0 if nothing is found.
+    """
+    try:
+        return int(ch.vault.functions.tokenId().call())
+    except Exception:
+        pass
+    try:
+        return int(ch.vault.functions.positionId().call())
+    except Exception:
+        pass
+    try:
+        vs = ch.vault_state()
+        if "tokenId" in vs:
+            return int(vs["tokenId"])
+    except Exception:
+        pass
+    return 0
 
 
 def load_strategies(path: str | None = None):
@@ -244,84 +292,121 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def balances_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /balances — mostra saldos livres do vault (token0/token1),
-    fees não coletadas e estimativa do que está alocado na pool (por token),
-    se houver uma posição ativa (liquidity > 0).
+    /balances — Show vault free balances, uncollected fees, and an estimate
+    of the amounts currently allocated in the Uniswap V3 position.
+
+    Notes:
+    - A Uniswap V3 position that is OUT-OF-RANGE still has positive liquidity.
+      The math below correctly shows 100% in token0 (below range) or 100% in token1 (above range).
+    - If your vault_state() returns a signed 'liquidity' (e.g., a net value),
+      we treat it as absolute to avoid false "no active liquidity".
+    - Fees shown come from your observer snapshot for convenience/consistency.
     """
     if not _allowed_chat(update):
         return
+
     try:
         s = CTX.s
         ch = CTX.ch
-        obs = CTX.observer.snapshot(twap_window=s.twap_window)  # também traz uncollected fees para o painel
+        obs = CTX.observer.snapshot(twap_window=s.twap_window)
 
-        # Metadados da pool e tokens
+        # Pool + token metadata
         t0 = ch.pool.functions.token0().call()
         t1 = ch.pool.functions.token1().call()
         c0, sym0, dec0 = _erc20_meta(ch, t0)
         c1, sym1, dec1 = _erc20_meta(ch, t1)
 
-        # Saldos livres no vault (wallet do contrato)
+        # Vault "free" balances (not in the position)
         bal0 = Decimal(c0.functions.balanceOf(s.vault).call()) / (Decimal(10) ** dec0)
         bal1 = Decimal(c1.functions.balanceOf(s.vault).call()) / (Decimal(10) ** dec1)
 
-        # Fees não coletadas (já humanizadas pelo observer.snapshot)
+        # Uncollected fees (already humanized by observer)
         fees_h = obs.get("fees_human", {})
-        fees0 = Decimal(str(fees_h.get("token0", 0)))  # já em unidades humanas
+        fees0 = Decimal(str(fees_h.get("token0", 0)))
         fees1 = Decimal(str(fees_h.get("token1", 0)))
 
-        # Posição atual (liquidez + ticks), se existir
-        # Usamos vault_state() esperando estes campos (com fallback seguro).
-        vstate = ch.vault_state()
-        liq = int(vstate.get("liquidity", 0))
-        lower = int(vstate.get("tickLower", obs["lower"]))
-        upper = int(vstate.get("tickUpper", obs["upper"]))
+        # Read the active position from NFPM if possible
+        token_id = _read_token_id_from_vault(ch)
 
-        # Tick atual
+        # Default/fallback values
+        liq_raw = 0
+        lower = int(obs["lower"])
+        upper = int(obs["upper"])
+
+        if token_id > 0:
+            # NonfungiblePositionManager.positions(tokenId) layout:
+            # (nonce, operator, token0, token1, fee, tickLower, tickUpper,
+            #  liquidity, feeGrowthInside0LastX128, feeGrowthInside1LastX128,
+            #  tokensOwed0, tokensOwed1)
+            pos = ch.nfpm.functions.positions(token_id).call()
+            lower = int(pos[5])
+            upper = int(pos[6])
+            liq_raw = int(pos[7])
+
+        # Treat liquidity as absolute to guard against signed/net values coming from elsewhere
+        L = abs(int(liq_raw))
+
+        # Current tick
         cur_tick = int(ch.pool.functions.slot0().call()[1])
 
-        # Estimar amounts na pool por token (se houver liquidez)
+        # Estimate amounts held in the position (works in-range and out-of-range)
         pool0 = pool1 = Decimal(0)
-        if liq > 0:
-            a0, a1 = _amounts_from_liquidity(liq, cur_tick, lower, upper)
-            # amounts retornam nas unidades "brutas" dos tokens (sem considerar decimals),
-            # então normalizamos pelos decimals
+        if L > 0:
+            a0, a1 = _amounts_from_liquidity(L, cur_tick, lower, upper)
             pool0 = a0 / (Decimal(10) ** dec0)
             pool1 = a1 / (Decimal(10) ** dec1)
 
-        # Totais (livre + pool + fees)
+        # Totals (free + pool + fees)
         tot0 = bal0 + pool0 + fees0
         tot1 = bal1 + pool1 + fees1
 
-        # Montar mensagem em HTML
+        # Curr price
+        usdc_per_eth = Decimal(str(obs["prices"]["current"]["p_t0_t1"]))
+        # Convert ALL token1 figures (ETH) to USDC
+        bal1_usdc  = (bal1  * usdc_per_eth)
+        pool1_usdc = (pool1 * usdc_per_eth)
+        fees1_usdc = (fees1 * usdc_per_eth)
+        tot1_usdc  = (tot1  * usdc_per_eth)
+        
+        # Build HTML reply
         html = []
-        html.append(f"<b>Vault:</b> <code>{s.vault}</code>")
+        html.append(f"<b>Vault:</b> <code>{escape(s.vault)}</code>")
+        if token_id > 0:
+            html.append(f"<b>Position tokenId:</b> <code>{token_id}</code>")
+        else:
+            html.append("<b>Position tokenId:</b> <i>not found</i>")
+
         html.append("<b>Token0 / Token1:</b> "
-                    f"<code>{sym0}</code> / <code>{sym1}</code>")
+                    f"<code>{escape(sym0)}</code> / <code>{escape(sym1)}</code>")
+
         html.append("")
         html.append("<b>Free (vault wallet)</b>")
-        html.append(f"• {sym0}: <code>{bal0:.6f}</code>")
-        html.append(f"• {sym1}: <code>{bal1:.6f}</code>")
+        html.append(f"• {escape(sym0)}: <code>{bal0:.6f}</code>")
+        html.append(f"• {escape(sym1)}: <code>{bal1:.6f}</code> (<code>{bal1_usdc:.2f}</code>)")
+
         html.append("")
         html.append("<b>Pool (position allocation — estimated)</b>")
-        if liq > 0:
-            html.append(f"• ticks: <code>{lower}</code> → <code>{upper}</code> | curTick=<code>{cur_tick}</code>")
-            html.append(f"• {sym0}: <code>{pool0:.6f}</code>")
-            html.append(f"• {sym1}: <code>{pool1:.6f}</code>")
+        html.append(f"• ticks: <code>{lower}</code> → <code>{upper}</code> | curTick=<code>{cur_tick}</code>")
+        if L > 0:
+            html.append(f"• {escape(sym0)}: <code>{pool0:.6f}</code>")
+            html.append(f"• {escape(sym1)}: <code>{pool1:.6f} (<code>{pool1_usdc:.2f}</code>)</code>")
         else:
-            html.append("• no active liquidity")
+            html.append("• no active liquidity (L=0)")
+
         html.append("")
         html.append("<b>Uncollected fees</b>")
-        html.append(f"• {sym0}: <code>{fees0:.6f}</code>")
-        html.append(f"• {sym1}: <code>{fees1:.6f}</code>")
+        html.append(f"• {escape(sym0)}: <code>{fees0:.6f}</code>")
+        html.append(f"• {escape(sym1)}: <code>{fees1:.6f}</code> (<code>{fees1_usdc:.2f}</code>)")
+
         html.append("")
         html.append("<b>Totals</b>")
-        html.append(f"• {sym0}: <code>{tot0:.6f}</code>  (free + pool + fees)")
-        html.append(f"• {sym1}: <code>{tot1:.6f}</code>  (free + pool + fees)")
+        html.append(f"• {escape(sym0)}: <code>{tot0:.6f}</code>  (free + pool + fees)")
+        html.append(f"• {escape(sym1)}: <code>{tot1:.6f}</code>  (free + pool + fees)  (<code>{tot1_usdc:.2f}</code>)")
 
-        await _reply(update, context,"\n".join(html), parse_mode=ParseMode.HTML)
+        await _reply(update, context, "\n".join(html), parse_mode=ParseMode.HTML)
+
     except Exception as e:
-        await _reply(update, context,f"⚠️ /balances error: {e}")
+        await _reply(update, context, f"⚠️ /balances error: {e}")
         
 
 async def history_cmd(update, context):
@@ -404,20 +489,7 @@ async def propose_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, context,"\n".join(lines))  # texto puro/HTML simples
     except Exception as e:
         await _reply(update, context,f"⚠️ /propose error: {e}")
-
-
-def _validate_ticks(lower: int, upper: int, spacing: int):
-    """
-    Validates tick bounds:
-      - lower < upper
-      - both multiples of tickSpacing
-    Raises ValueError on invalid input.
-    """
-    if lower >= upper:
-        raise ValueError("lower must be < upper")
-    if lower % spacing != 0 or upper % spacing != 0:
-        raise ValueError(f"ticks must be multiples of spacing={spacing}")
-
+        
 
 async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -436,7 +508,16 @@ async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not _allowed_chat(update):
         return
-
+    
+    if CTX.s.read_only_mode:
+        args = context.args or []
+        if len(args) >= 3 and args[2].lower() in ("exec", "execute", "run"):
+            await _reply(update, context,
+                "🔒 Read-only mode is enabled. Execution commands are disabled. "
+                "Unset READ_ONLY_MODE to allow transactions."
+            )
+            return
+        
     try:
         # Parse args: /rebalance <lower> <upper> [exec]
         args = context.args
