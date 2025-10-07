@@ -34,7 +34,7 @@
   {
     "id": "volatility_adjust_width",
     "name": "Dynamic Width Adjustment",
-    "active": true,
+    "active": false,
     "description": "Dynamically adjusts the range width based on recent volatility.",
     "params": {
       "lookback_sec": 600,

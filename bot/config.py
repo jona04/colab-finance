@@ -1,3 +1,4 @@
+# bot/config.py
 import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -26,5 +27,5 @@ def get_settings() -> Settings:
         max_twap_dev_ticks=int(os.environ.get("MAX_TWAP_DEVIATION_TICKS", "50")),
         min_cooldown=int(os.environ.get("MIN_COOLDOWN", "1800")),
         check_interval=int(os.environ.get("CHECK_INTERVAL", "30")),
-        private_key=str(os.environ.get("PRIVATE_KEY"))   
+        private_key=os.environ.get("PRIVATE_KEY", ""),  # empty when missing
     )

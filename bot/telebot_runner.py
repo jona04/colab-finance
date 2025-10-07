@@ -1,0 +1,568 @@
+# bot/telebot_runner.py
+"""
+Telegram bot runner (polling) for the Uni-Range-Bot.
+
+Commands:
+  /start
+  /status
+  /propose
+  /rebalance <lower> <upper> [exec]
+  /reload
+
+Security / Auth:
+- Only messages from TELEGRAM_CHAT_ID (chat/group/channel) OR ALLOWED_USER_IDS (comma-separated user IDs) are allowed.
+- If neither is set, the runner refuses to start.
+
+Behavior:
+- /status: live on-chain snapshot + USD panel + fees.
+- /propose: evaluates JSON strategies (bot/strategy/examples/strategies.json) and prints human-readable suggestions.
+- /rebalance: validates (tickSpacing, bounds, cooldown, twapOk) and either dry-runs or executes:
+     python -m bot.exec --lower X --upper Y --execute
+  It returns stdout and stores a short execution trail in bot/state.json (exec_history).
+- /reload: reloads strategies.json without restarting the runner.
+
+Notes:
+- Requires python-telegram-bot v20+.
+- Leverages your existing Chain, VaultObserver, and strategy registry modules.
+"""
+
+import os
+import shlex
+import json
+import subprocess
+from html import escape
+from pathlib import Path
+from datetime import datetime, timezone
+
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+)
+
+from bot.config import get_settings
+from bot.chain import Chain
+from bot.observer.vault_observer import VaultObserver
+from bot.strategy.registry import handlers
+from bot.utils.log import log_info, log_warn
+from decimal import Decimal, getcontext
+getcontext().prec = 60  # precisão boa para os cálculos de sqrt/amounts
+
+def _erc20_meta(ch: Chain, addr: str):
+    c = ch.erc20(addr)
+    sym = c.functions.symbol().call()
+    dec = int(c.functions.decimals().call())
+    return c, sym, dec
+
+def _sqrt_ratio_from_tick(tick: int) -> Decimal:
+    # sqrt(1.0001^tick)  — versão float/Decimal (aprox. suficiente para exibição)
+    return Decimal(1.0001) ** (Decimal(tick) / Decimal(2))
+
+def _amounts_from_liquidity(liq: int, cur_tick: int, lower: int, upper: int):
+    """
+    Estima amounts (token0, token1) para uma posição Uniswap V3.
+    Fórmulas (region-based):
+      if P <= Pa: amount0 = L*(Pb - Pa)/(Pa*Pb), amount1 = 0
+      if Pa < P < Pb: amount0 = L*(Pb - P)/(P*Pb), amount1 = L*(P - Pa)
+      if P >= Pb: amount0 = 0, amount1 = L*(Pb - Pa)
+    Onde P = sqrt(price), Pa = sqrt(price at lower), Pb = sqrt(price at upper)
+    """
+    L = Decimal(liq)
+    P  = _sqrt_ratio_from_tick(cur_tick)
+    Pa = _sqrt_ratio_from_tick(lower)
+    Pb = _sqrt_ratio_from_tick(upper)
+    if P <= Pa:
+        amt0 = L * (Pb - Pa) / (Pa * Pb)
+        amt1 = Decimal(0)
+    elif P >= Pb:
+        amt0 = Decimal(0)
+        amt1 = L * (Pb - Pa)
+    else:
+        amt0 = L * (Pb - P) / (P * Pb)
+        amt1 = L * (P - Pa)
+    return amt0, amt1
+
+async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, parse_mode: ParseMode | None = None):
+    """
+    Safe reply helper:
+    - Works even if update.message is None (e.g., channel posts, edited messages).
+    - Uses effective_chat.id to send messages.
+    """
+    chat = update.effective_chat
+    if not chat:
+        return
+    await context.bot.send_message(
+        chat_id=chat.id,
+        text=text,
+        parse_mode=parse_mode
+    )
+    
+def _allowed_chat(update: Update) -> bool:
+    """
+    Returns True if the incoming update is authorized.
+
+    Priority:
+      1) TELEGRAM_CHAT_ID — exact match with update.effective_chat.id
+      2) ALLOWED_USER_IDS — comma-separated list of user IDs (strings)
+
+    If neither is configured, returns False for safety.
+    """
+    tgid = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    allow_users = [u.strip() for u in os.environ.get("ALLOWED_USER_IDS", "").split(",") if u.strip()]
+
+    # Prefer explicit chat ID gate (works for groups/channels/DM)
+    if tgid:
+        try:
+            if str(update.effective_chat.id) == str(tgid):
+                return True
+        except Exception:
+            pass
+
+    # Fallback: allow-list of individual users
+    if allow_users and update.effective_user:
+        return str(update.effective_user.id) in allow_users
+
+    return False
+
+
+def load_strategies(path: str | None = None):
+    """
+    Reads strategies JSON from disk. Defaults to:
+      bot/strategy/examples/strategies.json
+
+    Raises FileNotFoundError if not present.
+    """
+    if path is None:
+        base = Path(__file__).resolve().parent
+        path = base / "strategy" / "examples" / "strategies.json"
+    else:
+        path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Strategies file not found: {path}")
+
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def evaluate_all(strategies, obs):
+    """
+    Evaluates all active strategies against the current observation.
+
+    Returns a list of dicts with at least:
+      { "id": <strategy_id>, "trigger": True, "reason": "...", ... }
+    and optionally { "lower": int, "upper": int } if there is a range suggestion.
+    """
+    results = []
+    for strat in strategies:
+        if not strat.get("active", True):
+            continue
+        fn = handlers.get(strat["id"])
+        if not fn:
+            continue
+        res = fn(strat["params"], obs)
+        if res and res.get("trigger"):
+            results.append({"id": strat["id"], **res})
+    return results
+
+
+def fmt_prices_block(obs: dict) -> str:
+    """
+    HTML-safe: mostra ETH/USDC e USDC/ETH em current/lower/upper.
+    """
+    pr_cur = obs["prices"]["current"]
+    pr_low = obs["prices"]["lower"]
+    pr_up  = obs["prices"]["upper"]
+
+    return (
+        "<b>PRICES</b> (token1/token0 = ETH/USDC | token0/token1 = USDC/ETH)\n"
+        f"  current: tick={pr_cur['tick']:,} | ETH/USDC={pr_cur['p_t1_t0']:.10f} | USDC/ETH={pr_cur['p_t0_t1']:.2f}\n"
+        f"  lower:   tick={pr_low['tick']:,} | ETH/USDC={pr_low['p_t1_t0']:.10f} | USDC/ETH={pr_low['p_t0_t1']:.2f}\n"
+        f"  upper:   tick={pr_up['tick']:,} | ETH/USDC={pr_up['p_t1_t0']:.10f} | USDC/ETH={pr_up['p_t0_t1']:.2f}"
+    )
+
+
+def fmt_state_block(obs: dict, spot_usdc_per_eth: float, twap_window: int) -> str:
+    """
+    HTML-safe: estado do range, fees e spot.
+    """
+    fees = obs.get("fees_human", {})
+    sym0 = escape(fees.get("sym0", "TOKEN0"))
+    sym1 = escape(fees.get("sym1", "TOKEN1"))
+
+    in_range = "✅" if not obs["out_of_range"] else "❌"
+    side = escape(obs.get("range_side", "-"))
+
+    return (
+        f"<b>STATE</b> side={side} | inRange={in_range} | "
+        f"pct_outside_tick≈{obs['pct_outside_tick']:.3f}% | twap_window={twap_window}s | vol={obs['volatility_pct']:.3f}%\n"
+        f"<b>FEES</b>  uncollected: {fees.get('token0', 0.0):.6f} {sym0} + {fees.get('token1', 0.0):.6f} {sym1} "
+        f"(≈ ${obs['uncollected_fees_usd']:.4f})\n"
+        f"<i>Spot USDC/ETH ≈ {spot_usdc_per_eth:,.2f}</i>"
+    )
+
+
+def fmt_usd_panel(snap) -> str:
+    """
+    HTML-safe: painel USD.
+    """
+    return (
+        f"<b>USD</b> total≈${snap.usd_value:,.2f} | ΔUSD={snap.delta_usd:+.2f} | "
+        f"baseline=${snap.baseline_usd:,.2f}"
+    )
+
+
+class AppCtx:
+    """
+    Lightweight application context that holds shared, long-lived objects:
+      - settings (env-based)
+      - chain (web3 contracts)
+      - observer (reads on-chain & derives metrics)
+      - strategies (JSON-driven configuration)
+    """
+    def __init__(self):
+        self.s = get_settings()
+        self.ch = Chain(self.s.rpc_url, self.s.pool, self.s.nfpm, self.s.vault)
+        self.observer = VaultObserver(self.ch)
+        self.strategies = load_strategies(os.environ.get("STRATEGIES_FILE"))
+
+
+# Initialize once on import (polling runtime is short-lived anyway)
+CTX = AppCtx()
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start — simple greeting + command help.
+    """
+    if not _allowed_chat(update):
+        return
+    await _reply(update, context,
+        "👋 Uni Range Bot is online.\n"
+        "Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload"
+    )
+
+
+async def balances_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /balances — mostra saldos livres do vault (token0/token1),
+    fees não coletadas e estimativa do que está alocado na pool (por token),
+    se houver uma posição ativa (liquidity > 0).
+    """
+    if not _allowed_chat(update):
+        return
+    try:
+        s = CTX.s
+        ch = CTX.ch
+        obs = CTX.observer.snapshot(twap_window=s.twap_window)  # também traz uncollected fees para o painel
+
+        # Metadados da pool e tokens
+        t0 = ch.pool.functions.token0().call()
+        t1 = ch.pool.functions.token1().call()
+        c0, sym0, dec0 = _erc20_meta(ch, t0)
+        c1, sym1, dec1 = _erc20_meta(ch, t1)
+
+        # Saldos livres no vault (wallet do contrato)
+        bal0 = Decimal(c0.functions.balanceOf(s.vault).call()) / (Decimal(10) ** dec0)
+        bal1 = Decimal(c1.functions.balanceOf(s.vault).call()) / (Decimal(10) ** dec1)
+
+        # Fees não coletadas (já humanizadas pelo observer.snapshot)
+        fees_h = obs.get("fees_human", {})
+        fees0 = Decimal(str(fees_h.get("token0", 0)))  # já em unidades humanas
+        fees1 = Decimal(str(fees_h.get("token1", 0)))
+
+        # Posição atual (liquidez + ticks), se existir
+        # Usamos vault_state() esperando estes campos (com fallback seguro).
+        vstate = ch.vault_state()
+        liq = int(vstate.get("liquidity", 0))
+        lower = int(vstate.get("tickLower", obs["lower"]))
+        upper = int(vstate.get("tickUpper", obs["upper"]))
+
+        # Tick atual
+        cur_tick = int(ch.pool.functions.slot0().call()[1])
+
+        # Estimar amounts na pool por token (se houver liquidez)
+        pool0 = pool1 = Decimal(0)
+        if liq > 0:
+            a0, a1 = _amounts_from_liquidity(liq, cur_tick, lower, upper)
+            # amounts retornam nas unidades "brutas" dos tokens (sem considerar decimals),
+            # então normalizamos pelos decimals
+            pool0 = a0 / (Decimal(10) ** dec0)
+            pool1 = a1 / (Decimal(10) ** dec1)
+
+        # Totais (livre + pool + fees)
+        tot0 = bal0 + pool0 + fees0
+        tot1 = bal1 + pool1 + fees1
+
+        # Montar mensagem em HTML
+        html = []
+        html.append(f"<b>Vault:</b> <code>{s.vault}</code>")
+        html.append("<b>Token0 / Token1:</b> "
+                    f"<code>{sym0}</code> / <code>{sym1}</code>")
+        html.append("")
+        html.append("<b>Free (vault wallet)</b>")
+        html.append(f"• {sym0}: <code>{bal0:.6f}</code>")
+        html.append(f"• {sym1}: <code>{bal1:.6f}</code>")
+        html.append("")
+        html.append("<b>Pool (position allocation — estimated)</b>")
+        if liq > 0:
+            html.append(f"• ticks: <code>{lower}</code> → <code>{upper}</code> | curTick=<code>{cur_tick}</code>")
+            html.append(f"• {sym0}: <code>{pool0:.6f}</code>")
+            html.append(f"• {sym1}: <code>{pool1:.6f}</code>")
+        else:
+            html.append("• no active liquidity")
+        html.append("")
+        html.append("<b>Uncollected fees</b>")
+        html.append(f"• {sym0}: <code>{fees0:.6f}</code>")
+        html.append(f"• {sym1}: <code>{fees1:.6f}</code>")
+        html.append("")
+        html.append("<b>Totals</b>")
+        html.append(f"• {sym0}: <code>{tot0:.6f}</code>  (free + pool + fees)")
+        html.append(f"• {sym1}: <code>{tot1:.6f}</code>  (free + pool + fees)")
+
+        await _reply(update, context,"\n".join(html), parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await _reply(update, context,f"⚠️ /balances error: {e}")
+        
+
+async def history_cmd(update, context):
+    if not _allowed_chat(update):
+        return
+    try:
+        p = Path("bot/state.json")
+        if not p.exists():
+            await _reply(update, context,"No history yet.")
+            return
+        st = json.loads(p.read_text())
+        hist = st.get("exec_history", [])
+        if not hist:
+            await _reply(update, context,"No history yet.")
+            return
+
+        # monta 5 últimas
+        lines = []
+        for it in hist[-5:][::-1]:
+            tx = it.get("tx")
+            txs = (tx[:10] + "…" + tx[-6:]) if tx else "—"
+            lines.append(
+                f"- {it['ts']} | [{it['lower']},{it['upper']}] | tx={txs}"
+            )
+        await _reply(update, context,"\n".join(lines))
+    except Exception as e:
+        await _reply(update, context,f"⚠️ /history error: {e}")
+        
+        
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _allowed_chat(update):
+        return
+    try:
+        obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
+        snap = CTX.observer.usd_snapshot()
+
+        prices_html = fmt_prices_block(obs)
+        state_html = fmt_state_block(obs, snap.spot_price, CTX.s.twap_window)
+        usd_html = fmt_usd_panel(snap)
+
+        text = (
+            f"<b>Vault:</b> <code>{escape(CTX.s.vault)}</code>\n"
+            f"{prices_html}\n\n{state_html}\n\n{usd_html}"
+        )
+        await _reply(update, context, text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await _reply(update, context,f"⚠️ /status error: {e}")
+
+
+async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /reload — reload the strategies JSON from disk.
+    """
+    if not _allowed_chat(update):
+        return
+    try:
+        CTX.strategies = load_strategies(os.environ.get("STRATEGIES_FILE"))
+        await _reply(update, context,"✅ strategies.json reloaded.")
+    except Exception as e:
+        await _reply(update, context,f"⚠️ /reload error: {e}")
+
+
+async def propose_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _allowed_chat(update):
+        return
+    try:
+        obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
+        sigs = evaluate_all(CTX.strategies, obs)
+
+        if not sigs:
+            await _reply(update, context,"ℹ️ No suggestion at the moment.")
+            return
+
+        lines = []
+        for s in sigs:
+            line = f"- {s['id']}: {s.get('reason','')}"
+            if "lower" in s and "upper" in s:
+                line += f"  (lower={s['lower']}, upper={s['upper']})"
+            lines.append(line)
+        await _reply(update, context,"\n".join(lines))  # texto puro/HTML simples
+    except Exception as e:
+        await _reply(update, context,f"⚠️ /propose error: {e}")
+
+
+def _validate_ticks(lower: int, upper: int, spacing: int):
+    """
+    Validates tick bounds:
+      - lower < upper
+      - both multiples of tickSpacing
+    Raises ValueError on invalid input.
+    """
+    if lower >= upper:
+        raise ValueError("lower must be < upper")
+    if lower % spacing != 0 or upper % spacing != 0:
+        raise ValueError(f"ticks must be multiples of spacing={spacing}")
+
+
+async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /rebalance <lower> <upper> [exec]
+
+    Flow:
+      1) Parse args and validate (tickSpacing, bounds).
+      2) Check cooldown and twapOk using vault state.
+      3) If no "exec", do a dry-run and print the suggestion.
+      4) If "exec", shell out to: python -m bot.exec --lower L --upper U --execute
+         and return the stdout tail to the chat. Also append a short entry in bot/state.json.
+
+    Notes:
+      - Requires PRIVATE_KEY et al. in environment when executing.
+      - This runner does not broadcast transactions directly; it delegates to your existing wrapper.
+    """
+    if not _allowed_chat(update):
+        return
+
+    try:
+        # Parse args: /rebalance <lower> <upper> [exec]
+        args = context.args
+        if len(args) < 2:
+            await _reply(update, context,"Usage: /rebalance <lower> <upper> [exec]")
+            return
+        lower = int(args[0])
+        upper = int(args[1])
+        do_exec = (len(args) >= 3 and args[2].lower() in ("exec", "execute", "run"))
+
+        # Validations
+        vstate = CTX.ch.vault_state()
+        spacing = CTX.ch.pool.functions.tickSpacing().call()
+        _validate_ticks(lower, upper, spacing)
+
+        # Cooldown (allow if never rebalanced: lastRebalance=0)
+        last = int(vstate["lastRebalance"])
+        now = int(datetime.utcnow().timestamp())
+        since = now - last if last > 0 else 10**9
+        if since < CTX.s.min_cooldown:
+            await _reply(update, context,
+                f"⏱️ Cooldown not passed. ~{CTX.s.min_cooldown - since}s remaining."
+            )
+            return
+
+        # TWAP guard (use vault.twapOk())
+        if not vstate["twapOk"]:
+            await update.message.reply_text("📉 TWAP guard failed (twapOk=false).")
+            return
+
+        if not do_exec:
+            await _reply(update, context,
+                f"🧪 Dry-run OK.\nSuggested: lower={lower}, upper={upper}\n"
+                "To execute: /rebalance <lower> <upper> exec"
+            )
+            return
+
+        # Execution via wrapper (python -m bot.exec)
+        cmd = f"python -m bot.exec --lower {lower} --upper {upper} --execute"
+        await _reply(update, context,f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
+
+
+        proc = subprocess.run(
+            shlex.split(cmd),
+            capture_output=True,
+            text=True,
+            env=os.environ
+        )
+
+        if proc.returncode != 0:
+            await _reply(update, context,
+                f"❌ Execution failed:\n<pre><code>{escape(proc.stderr or proc.stdout)[:3500]}</code></pre>",
+                parse_mode=ParseMode.HTML
+            )
+
+            return
+
+        out = proc.stdout[-3000:]
+        await _reply(update, context,
+            f"✅ Execution complete.\n<pre><code>{escape(out)}</code></pre>",
+            parse_mode=ParseMode.HTML
+        )
+
+
+        # Append entry to bot/state.json (best-effort)
+        try:
+            state_path = Path("bot/state.json")
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+            history = state.get("exec_history", [])
+            history.append({
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "lower": lower,
+                "upper": upper,
+                "stdout_tail": out,
+            })
+            state["exec_history"] = history[-50:]
+            state_path.write_text(json.dumps(state, indent=2))
+        except Exception:
+            pass
+
+    except Exception as e:
+        await _reply(update, context,f"⚠️ /rebalance error: {e}")
+
+
+async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Default handler for unrecognized messages.
+    """
+    if not _allowed_chat(update):
+        return
+    await _reply(update, context,"Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload")
+
+
+def _require_env(name: str) -> str:
+    """
+    Reads an env var and throws a runtime error when missing.
+    """
+    v = os.environ.get(name)
+    if not v:
+        raise RuntimeError(f"Missing env: {name}")
+    return v
+
+
+def main():
+    """
+    Entrypoint — builds the telegram application, registers handlers and starts polling.
+    """
+    token = _require_env("TELEGRAM_BOT_TOKEN")
+    # Require at least one auth mechanism
+    if not (os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("ALLOWED_USER_IDS")):
+        raise RuntimeError("Configure TELEGRAM_CHAT_ID or ALLOWED_USER_IDS")
+
+    app = ApplicationBuilder().token(token).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("history", history_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("propose", propose_cmd))
+    app.add_handler(CommandHandler("rebalance", rebalance_cmd))
+    app.add_handler(CommandHandler("reload", reload_cmd))
+    app.add_handler(CommandHandler("balances", balances_cmd))
+    app.add_handler(MessageHandler(filters.ALL, fallback))
+
+    log_info("Telegram runner up. Listening for commands...")
+    app.run_polling(close_loop=False)
+
+
+if __name__ == "__main__":
+    main()
