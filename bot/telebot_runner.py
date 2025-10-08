@@ -30,6 +30,7 @@ import os
 import shlex
 import json
 import subprocess
+import time
 from html import escape
 from pathlib import Path
 from datetime import datetime, timezone
@@ -278,6 +279,47 @@ class AppCtx:
 CTX = AppCtx()
 
 
+def _load_bot_state() -> dict:
+    p = Path("bot/state.json")
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return {}
+    return {}
+
+def _save_bot_state(d: dict):
+    p = Path("bot/state.json")
+    try:
+        p.write_text(json.dumps(d, indent=2))
+    except Exception:
+        pass
+
+def _add_collected_fees_to_state(pre_exec_fees0_raw: int, pre_exec_fees1_raw: int, usdc_per_eth: float):
+    """
+    Called only after a successful rebalance execution.
+    We add the *pre-exec* uncollected fees snapshot into the off-chain cumulative counters.
+    """
+    st = _load_bot_state()
+    fees_col = st.get("fees_collected_cum", {"token0_raw": 0, "token1_raw": 0})
+    # raw integers
+    fees_col["token0_raw"] = int(fees_col.get("token0_raw", 0) or 0) + int(pre_exec_fees0_raw or 0)
+    fees_col["token1_raw"] = int(fees_col.get("token1_raw", 0) or 0) + int(pre_exec_fees1_raw or 0)
+    st["fees_collected_cum"] = fees_col
+
+    # Track USD equivalent (just for reporting; não entra no V(P))
+    # Precisa converter token1 (ETH) p/ USDC e token0 (USDC) direto:
+    # Precisamos dos decimais para normalizar:
+    meta = CTX.ch.pool_meta()
+    dec0, dec1 = meta["dec0"], meta["dec1"]
+    fees0_h = (pre_exec_fees0_raw or 0) / (10 ** dec0)
+    fees1_h = (pre_exec_fees1_raw or 0) / (10 ** dec1)
+    add_usd = float(fees0_h + fees1_h * float(usdc_per_eth))
+    st["fees_cum_usd"] = float(st.get("fees_cum_usd", 0.0) or 0.0) + add_usd
+    st["last_fees_update_ts"] = datetime.utcnow().isoformat() + "Z"
+
+    _save_bot_state(st)
+    
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /start — simple greeting + command help.
@@ -287,6 +329,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply(update, context,
         "👋 Uni Range Bot is online.\n"
         "Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload"
+        "/history, /balances, /baseline set, /baseline show"
     )
 
 
@@ -447,13 +490,95 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state_html = fmt_state_block(obs, snap.spot_price, CTX.s.twap_window)
         usd_html = fmt_usd_panel(snap)
 
+        st = _load_bot_state()
+        fees_usd_cum = float(st.get("fees_cum_usd", 0.0) or 0.0)
+        
+        extras = f"\n<b>Collected fees (cum)</b>: ≈ ${fees_usd_cum:,.2f}"
         text = (
             f"<b>Vault:</b> <code>{escape(CTX.s.vault)}</code>\n"
-            f"{prices_html}\n\n{state_html}\n\n{usd_html}"
+            f"{prices_html}\n\n{state_html}\n\n{usd_html}{extras}"
         )
         await _reply(update, context, text, parse_mode=ParseMode.HTML)
     except Exception as e:
         await _reply(update, context,f"⚠️ /status error: {e}")
+
+
+def _fmt_breakeven_details_html(s: dict) -> str:
+    """
+    Build a rich HTML block for the breakeven_single_sided strategy result.
+    Assumes s["details"] exists (only when trigger=True).
+    """
+    d = s.get("details", {}) or {}
+    ticks = d.get("ticks", {})
+    prices = d.get("prices", {})
+    be = d.get("breakeven", {})
+    
+    # ETH/USDC
+    e_lower = prices.get("eth_per_usdc", {}).get("lower", {})
+    e_upper = prices.get("eth_per_usdc", {}).get("upper", {})
+    # USDC/ETH
+    u_lower = prices.get("usdc_per_eth", {}).get("lower", {})
+    u_upper = prices.get("usdc_per_eth", {}).get("upper", {})
+
+    curr_usdc_per_eth = prices.get("current", {}).get("usdc_per_eth", {})
+    curr_eth_per_usdc = prices.get("current", {}).get("eth_per_usdc", {})
+    curr_tick = prices.get("current", {}).get("tick", {})
+    
+    side = s.get("range_side", "-")
+    be_boundary = be.get("boundary", "-")
+    profit_usd = be.get("profit_usd", 0.0)
+    baseline = be.get("baseline_usd", 0.0)
+    target = be.get("target_usd", 0.0)
+    buf = be.get("buffer_pct", 0.0)
+
+    lines = []
+    lines.append(f"<b>action</b>=reallocate | side=<code>{escape(side)}</code>")
+    lines.append(f"<b>ticks</b>: lower=<code>{ticks.get('lower')}</code> | upper=<code>{ticks.get('upper')}</code>")
+    lines.append("<b>ETH/USDC</b>: "
+                 f"lower=<code>{e_lower.get('price'):.10f}</code> ({e_lower.get('sign','')}{abs(e_lower.get('delta_pct',0.0)):.3f}%) | "
+                 f"upper=<code>{e_upper.get('price'):.10f}</code> ({e_upper.get('sign','')}{abs(e_upper.get('delta_pct',0.0)):.3f}%)")
+    lines.append("<b>USDC/ETH</b>: "
+                 f"upper=<code>{u_lower.get('price'):.2f}</code> ({u_lower.get('sign','')}{abs(u_lower.get('delta_pct',0.0)):.3f}%) | "
+                 f"lower=<code>{u_upper.get('price'):.2f}</code> ({u_upper.get('sign','')}{abs(u_upper.get('delta_pct',0.0)):.3f}%)")
+    lines.append(f"<b>USDC/ETH</b>: Current=<code>{curr_usdc_per_eth:.2f}</code>")
+    lines.append(f"<b>ETH/USDC</b>: Current=<code>{curr_eth_per_usdc:.6f}</code>")
+    lines.append(f"<b>Tick</b>: Current=<code>{curr_tick:.2f}</code>")
+    lines.append(f"<b>breakeven at</b> <code>{be_boundary}</code> | "
+                 f"target V(P)≈<code>${target:,.2f}</code> vs baseline≈<code>${baseline:,.2f}</code> "
+                 f"(buffer={buf*100:.3f}%)")
+    lines.append(f"<b>profit at boundary</b>: <code>${profit_usd:,.2f}</code>")
+    return "\n".join(lines)
+
+
+def _reason_when_not_triggered(strat: dict, obs: dict, res: dict) -> str:
+    """
+    Produce a human-friendly reason when a strategy did not trigger.
+    Uses the strategy's own 'reason' if present; otherwise derives a sensible default.
+    """
+    # If strategy provided a reason, prefer it.
+    r = (res or {}).get("reason")
+    if r:
+        return r
+
+    # Derive generic reasons for the breakeven strategy
+    if strat.get("id") == "breakeven_single_sided":
+        if not obs.get("out_of_range", False):
+            return "Price is inside the current range."
+        out_since = float(obs.get("out_since") or 0.0)
+        minutes_out = (time.time() - out_since) / 60.0 if out_since else 0.0
+        min_minutes = float(strat.get("params", {}).get("minimum_minutes_out_of_range", 10))
+        if minutes_out < min_minutes:
+            return f"Outside for ~{minutes_out:.1f} min (< required {min_minutes:.1f} min)."
+        # Baseline missing?
+        try:
+            st = _load_bot_state()
+            if float(st.get("vault_initial_usd", 0.0) or 0.0) <= 0.0:
+                return "Baseline not set. Use /baseline set."
+        except Exception:
+            pass
+        return "Conditions not met for breakeven at minimal width."
+
+    return "No trigger."
 
 
 async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -474,23 +599,91 @@ async def propose_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
-        sigs = evaluate_all(CTX.strategies, obs)
 
-        if not sigs:
-            await _reply(update, context,"ℹ️ No suggestion at the moment.")
+        # Always show each ACTIVE strategy with its status.
+        strategies = [st for st in CTX.strategies if st.get("active", True)]
+        if not strategies:
+            await _reply(update, context, "ℹ️ No active strategies configured.")
             return
 
-        lines = []
-        for s in sigs:
-            line = f"- {s['id']}: {s.get('reason','')}"
-            if "lower" in s and "upper" in s:
-                line += f"  (lower={s['lower']}, upper={s['upper']})"
-            lines.append(line)
-        await _reply(update, context,"\n".join(lines))  # texto puro/HTML simples
+        blocks = []
+        for st in strategies:
+            sid = st.get("id", "unknown")
+            fn = handlers.get(sid)
+            if not fn:
+                blocks.append(f"• <b>{escape(sid)}</b>: handler not found.")
+                continue
+
+            res = fn(st.get("params", {}), obs)
+            header = f"<b>{escape(sid)}</b> — {escape(st.get('name',''))}"
+
+            if res and res.get("trigger"):
+                # Pretty-print details for breakeven strategy; fallback to compact line for others
+                if sid == "breakeven_single_sided":
+                    details_html = _fmt_breakeven_details_html(res)
+                    blocks.append(f"{header}\n✅ <i>{escape(res.get('reason','triggered'))}</i>\n{details_html}")
+                else:
+                    lower = res.get("lower")
+                    upper = res.get("upper")
+                    blocks.append(
+                        f"{header}\n✅ <i>{escape(res.get('reason','triggered'))}</i>"
+                        + (f"\nrange: lower=<code>{lower}</code> upper=<code>{upper}</code>" if lower and upper else "")
+                    )
+            else:
+                reason = _reason_when_not_triggered(st, obs, res or {})
+                blocks.append(f"{header}\n❕ <i>{escape(reason)}</i>")
+
+        await _reply(update, context, "\n\n".join(blocks), parse_mode=ParseMode.HTML)
+
     except Exception as e:
-        await _reply(update, context,f"⚠️ /propose error: {e}")
+        await _reply(update, context, f"⚠️ /propose error: {e}")
         
 
+async def baseline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /baseline show
+    /baseline set   -> define vault_initial_usd = V(P) (preço-apenas) no momento
+    """
+    if not _allowed_chat(update):
+        return
+    try:
+        args = context.args or []
+        sub = args[0].lower() if args else "show"
+
+        if sub == "set":
+            snap = CTX.observer.usd_snapshot()  # já exclui fees coletadas
+            # grava no state
+            st = _load_bot_state()
+            st["vault_initial_usd"] = float(snap.usd_value)
+            st["baseline_set_ts"] = datetime.utcnow().isoformat() + "Z"
+            _save_bot_state(st)
+            await _reply(update, context,
+                f"✅ Baseline set.\n"
+                f"vault_initial_usd=${snap.usd_value:,.2f}  (preço-apenas, fees coletadas excluídas)"
+            )
+            return
+
+        # default: show
+        st = _load_bot_state()
+        vinit = st.get("vault_initial_usd", None)
+        fees_usd_cum = float(st.get("fees_cum_usd", 0.0) or 0.0)
+        if vinit is None:
+            await _reply(update, context, "ℹ️ Baseline not set yet. Use /baseline set.")
+            return
+        snap = CTX.observer.usd_snapshot()
+        msg = (
+            f"<b>Baseline</b>\n"
+            f"• vault_initial_usd: <code>${float(vinit):,.2f}</code>\n"
+            f"• V(P) now (preço-apenas): <code>${snap.usd_value:,.2f}</code>\n"
+            f"• Δ vs baseline: <code>{snap.delta_usd:+.2f}</code>\n"
+            f"• Collected fees (cum, USD aprox): <code>${fees_usd_cum:,.2f}</code>"
+        )
+        await _reply(update, context, msg, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        await _reply(update, context, f"⚠️ /baseline error: {e}")
+        
+        
 async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /rebalance <lower> <upper> [exec]
@@ -555,6 +748,12 @@ async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # ---- PRE-EXEC SNAPSHOT (para acumular fees após exec) ----
+        pre_obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
+        pre_fees0 = int(pre_obs["uncollected_fees_token0"])
+        pre_fees1 = int(pre_obs["uncollected_fees_token1"])
+        pre_usdc_per_eth = float(CTX.observer.usd_snapshot().spot_price)
+        
         # Execution via wrapper (python -m bot.exec)
         cmd = f"python -m bot.exec --lower {lower} --upper {upper} --execute"
         await _reply(update, context,f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
@@ -581,7 +780,12 @@ async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
 
-
+        # ---- ACUMULAR FEES COLETADAS (off-chain) ----
+        try:
+            _add_collected_fees_to_state(pre_fees0, pre_fees1, pre_usdc_per_eth)
+        except Exception as e:
+            log_warn(f"failed to persist fees_collected_cum: {e}")
+            
         # Append entry to bot/state.json (best-effort)
         try:
             state_path = Path("bot/state.json")
@@ -608,7 +812,9 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not _allowed_chat(update):
         return
-    await _reply(update, context,"Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload")
+    await _reply(update, context,
+        "Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload"
+        "/history, /balances, /baseline set, /baseline show")
 
 
 def _require_env(name: str) -> str:
@@ -639,6 +845,7 @@ def main():
     app.add_handler(CommandHandler("rebalance", rebalance_cmd))
     app.add_handler(CommandHandler("reload", reload_cmd))
     app.add_handler(CommandHandler("balances", balances_cmd))
+    app.add_handler(CommandHandler("baseline", baseline_cmd))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log_info("Telegram runner up. Listening for commands...")

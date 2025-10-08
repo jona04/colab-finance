@@ -5,26 +5,26 @@ used by strategy evaluation (pct_outside, out_since, spot_price, entry_price, vo
 
 import time
 import json
+import math
 from dataclasses import dataclass, asdict
 from decimal import Decimal, getcontext
 from typing import Dict, Any
 
 from bot.chain import Chain
-from bot.observer.state_manager import StateManager
 
 getcontext().prec = 80
 Q96 = Decimal(2) ** 96
 
 @dataclass
 class VaultSnapshot:
-    usd_value: float
-    delta_usd: float
-    baseline_usd: float
+    usd_value: float                  # V(P) (preço-apenas, exclui fees coletadas)
+    delta_usd: float                  # V(P) - vault_initial_usd
+    baseline_usd: float               # = vault_initial_usd
     token0_idle: float
     token1_idle: float
     token0_in_pos: float
     token1_in_pos: float
-    spot_price: float
+    spot_price: float                 # USDC/ETH (sempre em dólares por ETH)
     
 @dataclass
 class VaultObservation:
@@ -61,10 +61,31 @@ class VaultObserver:
         # cache pool meta
         self._meta = self.chain.pool_meta()  # {token0, token1, fee, spacing, sym0, sym1, dec0, dec1}
 
+        # ensure Fase 4.A keys
+        self._ensure_phase4_keys()
+        
     # ---------------------
     # helpers
     # ---------------------
 
+    def _ensure_phase4_keys(self):
+        """
+        Initialize Fase 4.A state keys if missing.
+        - vault_initial_usd: set lazily on first usd_snapshot() if absent (using price-apenas V(P))
+        - fees_collected_cum: dict with raw token units accumulated off-chain after successful exec
+        - fees_cum_usd: running USD total of collected fees (for relatórios — não entra no V(P))
+        """
+        st = self.state
+        if "fees_collected_cum" not in st:
+            st["fees_collected_cum"] = {
+                "token0_raw": 0,   # integers in raw token units (dec0/dec1)
+                "token1_raw": 0
+            }
+        if "fees_cum_usd" not in st:
+            st["fees_cum_usd"] = 0.0
+        # vault_initial_usd: será definido no primeiro usd_snapshot() (se o user ainda não rodou /baseline set)
+        self._save_state()
+        
     @staticmethod
     def _pct_from_dtick(d_ticks: int) -> float:
         """
@@ -90,7 +111,6 @@ class VaultObserver:
         """
         Naive rolling volatility (% std of log returns) with small window for MVP.
         """
-        import math
         s = self._price_series[-window:]
         if len(s) < 3:
             return 0.0
@@ -173,8 +193,9 @@ class VaultObserver:
         Builds a full observation from on-chain data + persisted state.
         """
         sqrtP, tick = self.chain.slot0()
-        twap_tick = self.chain.observe_twap_tick(twap_window)
-        lower, upper, liq = self.chain.vault_state()["lower"], self.chain.vault_state()["upper"], self.chain.vault_state()["liq"]
+        _ = self.chain.observe_twap_tick(twap_window)  # value kept for guards/UI if needed
+        vs = self.chain.vault_state()
+        lower, upper, liq = vs["lower"], vs["upper"], vs["liq"]
         spacing = self._meta["spacing"]
 
         # spot price in token1/token0
@@ -188,7 +209,7 @@ class VaultObserver:
 
         # in/out of range and % outside (tick-based and price-based)
         out_of_range = tick < lower or tick >= upper
-
+        
         # tick-based magnitude
         if out_of_range:
             d_ticks = (lower - tick) if tick < lower else (tick - upper)
@@ -197,14 +218,23 @@ class VaultObserver:
             d_ticks = 0
             pct_outside_tick = 0.0
 
-        # manage out_since persisted
-        out_since = self.state.get("out_since", 0)
-        if out_of_range and not out_since:
-            out_since = time.time()
-            self.state["out_since"] = out_since
-        elif not out_of_range and out_since:
-            out_since = 0
-            self.state["out_since"] = 0
+        # manage out_since persisted (0.0 means “not out of range” / unset)
+        out_since = float(self.state.get("out_since", 0.0))
+
+        state_changed = False
+        
+        if out_of_range:
+            # set only on transition into "out"
+            if out_since == 0.0:
+                out_since = time.time()
+                self.state["out_since"] = out_since
+                state_changed = True
+        else:
+            # clear only on transition back "in"
+            if out_since != 0.0:
+                out_since = 0.0
+                self.state["out_since"] = 0.0
+                state_changed = True
 
         # ensure entry_price exists after the *first open*
         entry_price = self.state.get("entry_price", None)
@@ -213,7 +243,11 @@ class VaultObserver:
             # use current spot as baseline entry for MVP
             self.state["entry_price"] = spot_price
             entry_price = spot_price
+            state_changed = True
 
+        if state_changed:
+            self._save_state()
+        
         # fees (callStatic)
         fees0, fees1 = (0, 0)
         if token_id != 0:
@@ -331,24 +365,36 @@ class VaultObserver:
         token0_in_pos = amount0_pos / (10 ** dec0)
         token1_in_pos = amount1_pos / (10 ** dec1)
 
-        # --- USD estimation ---
-        total_usd = (
-            token0_idle + token0_in_pos
-            + (token1_idle + token1_in_pos) * price_usd_per_token1
-        )
-
-        baseline_usd = self.state.get("baseline_usd", None)
-        if baseline_usd is None:
-            baseline_usd = total_usd
-            self.state["baseline_usd"] = baseline_usd
+        # --- Subtract cumulated collected fees (RAW) from "estoque vivo" ---
+        fees_col = self.state.get("fees_collected_cum", {"token0_raw": 0, "token1_raw": 0})
+        adj_token0 = (bal0_idle + amount0_pos) - int(fees_col.get("token0_raw", 0) or 0)
+        adj_token1 = (bal1_idle + amount1_pos) - int(fees_col.get("token1_raw", 0) or 0)
+        
+        # Guard: não deixar negativo (casos raros de drift/rounding)
+        if adj_token0 < 0: adj_token0 = 0
+        if adj_token1 < 0: adj_token1 = 0
+        
+        adj_token0_h = adj_token0 / (10 ** dec0)
+        adj_token1_h = adj_token1 / (10 ** dec1)
+        
+         # --- USD estimation (preço-apenas) ---
+        # sempre: somar o que é USDC + (ETH * USDC/ETH)
+        total_usd = adj_token0_h + adj_token1_h * price_usd_per_token1
+        
+        # --- Baseline (vault_initial_usd) ---
+        vault_initial = self.state.get("vault_initial_usd", None)
+        if vault_initial is None:
+            # define baseline uma única vez (se o user não fizer /baseline set manual)
+            vault_initial = total_usd
+            self.state["vault_initial_usd"] = vault_initial
             self._save_state()
 
-        delta_usd = total_usd - baseline_usd
-
+        delta_usd = total_usd - float(vault_initial)
+        
         return VaultSnapshot(
             usd_value=total_usd,
             delta_usd=delta_usd,
-            baseline_usd=baseline_usd,
+            baseline_usd=float(vault_initial),
             token0_idle=token0_idle,
             token1_idle=token1_idle,
             token0_in_pos=token0_in_pos,
@@ -372,9 +418,10 @@ class VaultObserver:
         spot = self._price_series[-1] if self._price_series else 0.0
         current_usd = (amount0_raw / (10 ** dec0)) + (amount1_raw / (10 ** dec1)) * spot
 
-        base_usd = self.state.get("baseline_usd", None)
+        base_usd = self.state.get("vault_initial_usd", None)
         if base_usd is None:
-            self.state.set("baseline_usd", current_usd)
+            self.state["vault_initial_usd"] = current_usd
+            self._save_state()
             base_usd = current_usd
 
         return float(current_usd - base_usd)
