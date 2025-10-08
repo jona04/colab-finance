@@ -124,6 +124,16 @@ forge script script/SetPoolOnce.s.sol:SetPoolOnce \
 
 3) Enviar tokens para o vault  
 Transferir token0/token1 para o VAULT_ADDRESS.
+export RPC_URL="https://seu-rpc"           # Sepolia RPC
+export PK="0xSEU_PRIVATE_KEY"
+
+cast send \
+  $USDC_ADDRESS$ \
+  "transfer(address,uint256)" \
+  $VAULT_ADDRESS$ \
+  1000000000 \
+  --rpc-url $RPC_URL \
+  --private-key $PK
 
 4) Abrir posição inicial  
 export LOWER_TICK=-120  
