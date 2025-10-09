@@ -83,7 +83,7 @@ from typing import Dict, Any, Tuple
 
 from ..config import get_settings
 from ..chain import Chain
-from ..utils.ticks import align_to_spacing
+from ..utils.log import log_info, log_warn
 
 
 # ---------- small math helpers (dimensionless √price and price views) ----------
@@ -402,7 +402,7 @@ def breakeven_single_sided(params: Dict[str, Any], obs: Dict[str, Any]) -> Dict[
         lower = _align_up(tick, spacing) + (near_k - 1) * spacing
         # upper = lower + spacing  # minimal width
         if adj0_raw <= 0:
-            return {"trigger": False, "reason": "No live token1 inventory to reallocate (above)."}
+            return {"trigger": False, "reason": "No live token0 inventory to reallocate (above)."}
 
         # USER REQUEST: upper definido por um percentual do preço USDC/ETH no LOWER.
         # Param: upper_gap_usdc_per_eth_pct (ex.: 0.01 = 1%)
@@ -412,21 +412,31 @@ def breakeven_single_sided(params: Dict[str, Any], obs: Dict[str, Any]) -> Dict[
         
         # USDC/ETH @lower
         lower_usdc_per_eth = _usdc_per_eth_at_tick(lower, dec0, dec1, usdc_idx, eth_idx)
-        
-        # Para 'below', tick↑ => USDC/ETH↓. Queremos upper *abaixo* em USDC/ETH por (gap_pct).
+        # For 'below', higher tick => lower USDC/ETH. We want 'upper' a bit *below* lower's USDC/ETH.
         target_upper_usdc_per_eth = lower_usdc_per_eth * (1.0 - gap_pct)
 
-        # Converte o alvo de USDC/ETH para tick e alinha.
         raw_upper_tick = _tick_from_usdc_per_eth_target(
             target_upper_usdc_per_eth, dec0, dec1, usdc_idx, eth_idx
         )
         upper = _align_up(raw_upper_tick, spacing)
 
-        # Garantia de ordem e largura mínima (ficar fora do range com lower<upper).
+        # VALIDATIONS: enforce order and being out-of-range on the correct side
         if upper <= lower:
-            upper = lower + spacing
-            
+            upper = lower + spacing  # ensure minimal positive width
+
+        if not (tick < lower):
+            # push lower further up until it is strictly above current tick
+            lower = _align_up(tick, spacing) + near_k * spacing
+            if upper <= lower:
+                upper = lower + spacing
+
+        # Compute target for reporting (below: breakeven boundary is the UPPER)
+        target_usd = _target_usd_below(lower, upper)
         breakeven_boundary = "upper"
+
+        log_info(f"[breakeven_single_sided] side=below "
+                 f"tick={tick} lower={lower} upper={upper} "
+                 f"target_usd={target_usd:.4f} required_usd={required_usd:.4f}")
 
         
     else:  # tick_side == "above"
@@ -434,18 +444,27 @@ def breakeven_single_sided(params: Dict[str, Any], obs: Dict[str, Any]) -> Dict[
         upper = _align_down(tick, spacing) - (near_k - 1) * spacing
         lower = upper - spacing  # minimal width
         if adj1_raw <= 0:
-            return {"trigger": False, "reason": "No live token0 inventory to reallocate (below)."}
+            return {"trigger": False, "reason": "No live token1 inventory to reallocate (below)."}
 
         target_fn = _target_usd_above
         breakeven_boundary = "lower"
 
-        # Step 1: expand the OPPOSITE side first (lower ↓)
+        # Ensure strictly out-of-range on the above side
+        if not (tick > upper):
+            upper = _align_down(tick, spacing) - near_k * spacing
+            lower = upper - spacing
+
+        # Expand opposite side (lower ↓) if needed
         steps_used = 0
         target_usd = target_fn(lower, upper)
         while target_usd + 1e-12 < required_usd and steps_used < max_opp_steps:
             lower -= spacing
             steps_used += 1
             target_usd = target_fn(lower, upper)
+
+        log_info(f"[breakeven_single_sided] side=above "
+                 f"tick={tick} lower={lower} upper={upper} steps={steps_used} "
+                 f"target_usd={target_usd:.4f} required_usd={required_usd:.4f}")
     
         # Final decision
         # if target_usd + 1e-12 < required_usd:
@@ -455,8 +474,6 @@ def breakeven_single_sided(params: Dict[str, Any], obs: Dict[str, Any]) -> Dict[
         #         "reason": f"Breakeven still not reached after widening (shortfall ${shortfall:.2f}).",
         #         "action": "wait"
         #     }
-
-    print("side", tick_side,tick,lower,upper, target_usd, required_usd)
     
     # Pretty prices & deltas for output
     def _prices_and_deltas(tk: int) -> Tuple[float, float, float, float, str, str]:

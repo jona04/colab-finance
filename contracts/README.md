@@ -329,7 +329,7 @@ cast send $VAULT_ADDRESS "setPoolOnce(address)" $POOL_ADDRESS \
   --rpc-url $RPC_SEPOLIA --private-key $PRIVATE_KEY
 
 # Transferir token para o vault
-cast send $TOKEN0 "transfer(address,uint256)" $VAULT_ADDRESS 1000000000000000000 \
+cast send $TOKEN0 "transfer(address,uint256)" $VAULT_ADDRESS 100000000000000000000 \ #100
   --rpc-url $RPC_SEPOLIA --private-key $PRIVATE_KEY
 
 # Abrir posição inicial

@@ -512,18 +512,18 @@ def _fmt_breakeven_details_html(s: dict) -> str:
     ticks = d.get("ticks", {})
     prices = d.get("prices", {})
     be = d.get("breakeven", {})
-    
-    # ETH/USDC
-    e_lower = prices.get("eth_per_usdc", {}).get("lower", {})
-    e_upper = prices.get("eth_per_usdc", {}).get("upper", {})
-    # USDC/ETH
-    u_lower = prices.get("usdc_per_eth", {}).get("lower", {})
-    u_upper = prices.get("usdc_per_eth", {}).get("upper", {})
 
-    curr_usdc_per_eth = prices.get("current", {}).get("usdc_per_eth", {})
-    curr_eth_per_usdc = prices.get("current", {}).get("eth_per_usdc", {})
-    curr_tick = prices.get("current", {}).get("tick", {})
-    
+    # ETH/USDC
+    e_lower = prices.get("eth_per_usdc", {}).get("lower", {}) or {}
+    e_upper = prices.get("eth_per_usdc", {}).get("upper", {}) or {}
+    # USDC/ETH
+    u_lower = prices.get("usdc_per_eth", {}).get("lower", {}) or {}
+    u_upper = prices.get("usdc_per_eth", {}).get("upper", {}) or {}
+
+    curr_usdc_per_eth = float(prices.get("current", {}).get("usdc_per_eth", 0.0))
+    curr_eth_per_usdc = float(prices.get("current", {}).get("eth_per_usdc", 0.0))
+    curr_tick = float(prices.get("current", {}).get("tick", 0))
+
     side = s.get("range_side", "-")
     be_boundary = be.get("boundary", "-")
     profit_usd = be.get("profit_usd", 0.0)
@@ -531,15 +531,30 @@ def _fmt_breakeven_details_html(s: dict) -> str:
     target = be.get("target_usd", 0.0)
     buf = be.get("buffer_pct", 0.0)
 
+    # consolidated delta lines vs current (both price views)
+    ed_low = abs(float(e_lower.get("delta_pct", 0.0)))
+    ed_up  = abs(float(e_upper.get("delta_pct", 0.0)))
+    ud_low = abs(float(u_lower.get("delta_pct", 0.0)))
+    ud_up  = abs(float(u_upper.get("delta_pct", 0.0)))
+
     lines = []
     lines.append(f"<b>action</b>=reallocate | side=<code>{escape(side)}</code>")
     lines.append(f"<b>ticks</b>: lower=<code>{ticks.get('lower')}</code> | upper=<code>{ticks.get('upper')}</code>")
+
+    # ETH/USDC block (unchanged)
     lines.append("<b>ETH/USDC</b>: "
-                 f"lower=<code>{e_lower.get('price'):.10f}</code> ({e_lower.get('sign','')}{abs(e_lower.get('delta_pct',0.0)):.3f}%) | "
-                 f"upper=<code>{e_upper.get('price'):.10f}</code> ({e_upper.get('sign','')}{abs(e_upper.get('delta_pct',0.0)):.3f}%)")
+                 f"lower=<code>{e_lower.get('price', 0.0):.10f}</code> ({e_lower.get('sign','')}{ed_low:.3f}%) | "
+                 f"upper=<code>{e_upper.get('price', 0.0):.10f}</code> ({e_upper.get('sign','')}{ed_up:.3f}%)")
+
+    # USDC/ETH block — FIXED order labeling (lower then upper)
     lines.append("<b>USDC/ETH</b>: "
-                 f"upper=<code>{u_lower.get('price'):.2f}</code> ({u_lower.get('sign','')}{abs(u_lower.get('delta_pct',0.0)):.3f}%) | "
-                 f"lower=<code>{u_upper.get('price'):.2f}</code> ({u_upper.get('sign','')}{abs(u_upper.get('delta_pct',0.0)):.3f}%)")
+                 f"upper=<code>{u_lower.get('price', 0.0):.2f}</code> ({u_lower.get('sign','')}{ud_low:.3f}%) | "
+                 f"lower=<code>{u_upper.get('price', 0.0):.2f}</code> ({u_upper.get('sign','')}{ud_up:.3f}%)")
+
+    # NEW: concise consolidated delta line
+    lines.append(f"<b>Δ vs current</b>: USDC/ETH → lower {u_lower.get('sign','')}{ud_low:.3f}% | upper {u_upper.get('sign','')}{ud_up:.3f}% "
+                 f"| ETH/USDC → lower {e_lower.get('sign','')}{ed_low:.3f}% | upper {e_upper.get('sign','')}{ed_up:.3f}%")
+
     lines.append(f"<b>USDC/ETH</b>: Current=<code>{curr_usdc_per_eth:.2f}</code>")
     lines.append(f"<b>ETH/USDC</b>: Current=<code>{curr_eth_per_usdc:.6f}</code>")
     lines.append(f"<b>Tick</b>: Current=<code>{curr_tick:.2f}</code>")
