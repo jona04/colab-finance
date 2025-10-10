@@ -27,6 +27,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from bot.utils.log import log_info, log_warn
 from bot.config import get_settings
+from bot.vault_registry import get as vault_get
 
 load_dotenv()
 
@@ -73,7 +74,8 @@ def main():
     parser.add_argument("--execute", action="store_true", help="Actually run forge script (otherwise dry-run)")
     parser.add_argument("--vault-exit", action="store_true", help="Exit position to vault (decrease+collect+burn).")
     parser.add_argument("--vault-exit-withdraw", action="store_true", help="Exit position and withdraw all to owner.")
-
+    parser.add_argument("--vault", type=str, help="Vault alias or 0x-address (overrides settings)")
+    
     args = parser.parse_args()
 
     mode_exit = bool(args.vault_exit)
@@ -92,14 +94,22 @@ def main():
         action_label = "Exit position to vault" if mode_exit else "Exit + WithdrawAll to owner"
         
     s = get_settings()
-    log_info(f"Preparing {'EXECUTION' if args.execute else 'DRY-RUN'} for vault={s.vault}")
+    if args.vault:
+        if args.vault.startswith("0x"):
+            vault_addr = args.vault
+        else:
+            v = vault_get(args.vault)
+            if not v:
+                raise RuntimeError("unknown vault alias in --vault")
+            vault_addr = v["address"]
+
+    log_info(f"Preparing {'EXECUTION' if args.execute else 'DRY-RUN'} for vault={vault_addr}")
     log_info(action_label)
 
     # export the envs that your Forge script reads via vm.env*
     env = os.environ.copy()
-    env["VAULT_ADDRESS"]= s.vault
-    env["RPC_SEPOLIA"]  = s.rpc_url  # in case script references it
-    
+    env["VAULT_ADDRESS"] = vault_addr
+    env["RPC_SEPOLIA"]   = s.rpc_url
     if not (mode_exit or mode_exit_withdraw):
         env["LOWER_TICK"] = str(args.lower)
         env["UPPER_TICK"] = str(args.upper)

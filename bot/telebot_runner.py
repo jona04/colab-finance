@@ -34,6 +34,7 @@ import time
 from html import escape
 from pathlib import Path
 from datetime import datetime, timezone
+from contextlib import contextmanager
 
 from telegram import Update
 from telegram.constants import ParseMode, ChatType
@@ -47,12 +48,45 @@ from bot.observer.vault_observer import VaultObserver
 from bot.strategy.registry import handlers
 from bot.utils.log import log_info, log_warn
 from decimal import Decimal, getcontext
+from bot.vault_registry import (
+    list_vaults as vault_list,
+    add as vault_add,
+    set_active as vault_set_active,
+    active_alias,
+    get as vault_get,
+    set_pool as vault_set_pool
+)
+
 getcontext().prec = 60  # precisão boa para os cálculos de sqrt/amounts
+
 
 READ_ONLY = os.environ.get("READ_ONLY", "0").strip() in ("1", "true", "yes")
 REQUIRE_CHAT_ONLY = os.environ.get("REQUIRE_CHAT_ONLY", "0").strip() in ("1", "true", "yes")  # exige TELEGRAM_CHAT_ID
 BLOCK_DMS = os.environ.get("BLOCK_DMS", "0").strip() in ("1", "true", "yes") 
 
+@contextmanager
+def _env_override(mapping: dict[str, str | None]):
+    """
+    Temporarily override os.environ keys (only ones present in mapping).
+    Restores the previous values on exit.
+    """
+    old = {}
+    try:
+        for k, v in mapping.items():
+            old[k] = os.environ.get(k)
+            if v is None:
+                if k in os.environ:
+                    del os.environ[k]
+            else:
+                os.environ[k] = str(v)
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+                
 def _erc20_meta(ch: Chain, addr: str):
     c = ch.erc20(addr)
     sym = c.functions.symbol().call()
@@ -105,19 +139,17 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, 
 def _allowed_chat(update: Update) -> bool:
     """
     Authorization gate:
-
       1) TELEGRAM_CHAT_ID must match (group/channel/DM), if configured.
       2) Otherwise allow if user is in ALLOWED_USER_IDS (from Settings).
       3) If BLOCK_DM=true in Settings, reject private chats.
-
-    If neither mechanism is configured, deny for safety.
     """
     chat = update.effective_chat
     user = update.effective_user
+    s = get_settings()
 
     # 3) block DMs if requested
     try:
-        if CTX.s.block_dm and chat and getattr(chat, "type", None) == ChatType.PRIVATE:
+        if s.block_dm and chat and getattr(chat, "type", None) == ChatType.PRIVATE:
             return False
     except Exception:
         pass
@@ -128,8 +160,8 @@ def _allowed_chat(update: Update) -> bool:
         return True
 
     # 2) per-user allow-list (Settings)
-    if CTX.s.allowed_user_ids and user:
-        return str(user.id) in CTX.s.allowed_user_ids
+    if s.allowed_user_ids and user:
+        return str(user.id) in s.allowed_user_ids
 
     return False
 
@@ -268,15 +300,49 @@ class AppCtx:
       - observer (reads on-chain & derives metrics)
       - strategies (JSON-driven configuration)
     """
-    def __init__(self):
+    def __init__(self,rpc_url: str, pool_addr: str, nfpm_addr: str, vault_addr: str):
         self.s = get_settings()
-        self.ch = Chain(self.s.rpc_url, self.s.pool, self.s.nfpm, self.s.vault)
+        self.ch = Chain(rpc_url, pool_addr, nfpm_addr, vault_addr)
         self.observer = VaultObserver(self.ch)
         self.strategies = load_strategies(os.environ.get("STRATEGIES_FILE"))
 
+class MultiVaultCtx:
+    """
+    Lazy per-alias ctx cache (Chain + Observer por vault).
+    """
+    def __init__(self):
+        self.s = get_settings()
+        self._by_alias: dict[str, AppCtx] = {}
 
-# Initialize once on import (polling runtime is short-lived anyway)
-CTX = AppCtx()
+    def get_or_create(self, alias: str) -> "AppCtx":
+        if alias in self._by_alias:
+            return self._by_alias[alias]
+        v = vault_get(alias)
+        if not v:
+            raise RuntimeError(f"unknown vault alias: {alias}")
+        rpc  = v.get("rpc_url") or self.s.rpc_url
+        nfpm = v.get("nfpm")   #or self.s.nfpm
+        pool = v.get("pool")   #or self.s.pool
+        addr = v["address"]
+
+        ctx = AppCtx(rpc, pool, nfpm, addr)
+        self._by_alias[alias] = ctx
+        return ctx
+
+MVCTX = MultiVaultCtx()
+
+def _resolve_alias_from_args(args) -> str:
+    """
+    Resolve vault alias. Se última arg começa com "@", usa esse alias e remove-o de args.
+    Caso contrário, usa o 'active' salvo em bot/vaults.json.
+    """
+    a = active_alias()
+    if args and args[-1].startswith("@"):
+        a = args[-1][1:]
+        args.pop()
+    if not a:
+        raise RuntimeError("No active vault. Use /vault_add ou /vault_select primeiro.")
+    return a
 
 
 def _load_bot_state() -> dict:
@@ -295,23 +361,24 @@ def _save_bot_state(d: dict):
     except Exception:
         pass
 
-def _add_collected_fees_to_state(pre_exec_fees0_raw: int, pre_exec_fees1_raw: int, usdc_per_eth: float):
+def _add_collected_fees_to_state(
+    pre_exec_fees0_raw: int,
+    pre_exec_fees1_raw: int,
+    usdc_per_eth: float,
+    dec0: int,
+    dec1: int,
+):
     """
-    Called only after a successful rebalance execution.
-    We add the *pre-exec* uncollected fees snapshot into the off-chain cumulative counters.
+    Called only after a successful on-chain action.
+    Adds *pre-exec* uncollected fees snapshot into off-chain cumulative counters.
     """
     st = _load_bot_state()
     fees_col = st.get("fees_collected_cum", {"token0_raw": 0, "token1_raw": 0})
-    # raw integers
     fees_col["token0_raw"] = int(fees_col.get("token0_raw", 0) or 0) + int(pre_exec_fees0_raw or 0)
     fees_col["token1_raw"] = int(fees_col.get("token1_raw", 0) or 0) + int(pre_exec_fees1_raw or 0)
     st["fees_collected_cum"] = fees_col
 
-    # Track USD equivalent (just for reporting; não entra no V(P))
-    # Precisa converter token1 (ETH) p/ USDC e token0 (USDC) direto:
-    # Precisamos dos decimais para normalizar:
-    meta = CTX.ch.pool_meta()
-    dec0, dec1 = meta["dec0"], meta["dec1"]
+    # Humanize with provided decimals (no global CTX usage).
     fees0_h = (pre_exec_fees0_raw or 0) / (10 ** dec0)
     fees1_h = (pre_exec_fees1_raw or 0) / (10 ** dec1)
     add_usd = float(fees0_h + fees1_h * float(usdc_per_eth))
@@ -327,13 +394,67 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _allowed_chat(update):
         return
     await _reply(update, context,
-        "👋 Uni Range Bot is online.\n"
-        "Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload"
-        "/history, /balances, /baseline set, /baseline show"
-        "/withdraw pool, /withdraw all"
-    )
+    "👋 Uni Range Bot is online.\n"
+    "Commands: /status [@alias], /propose [@alias], /rebalance <lower> <upper> [exec] [@alias], /reload\n"
+    "/history [@alias], /balances [@alias], /baseline <set|show> [@alias]\n"
+    "/withdraw <pool|all> [exec] [@alias]\n"
+    "/vault_add <alias> <vault> [pool] [nfpm] [rpc], /vault_select <alias>, /vault_list, /vault_setpool <alias> <pool>"
+)
 
 
+async def vault_list_cmd(update, context):
+    if not _allowed_chat(update): return
+    rows = vault_list()
+    if not rows:
+        await _reply(update, context, "No vaults yet. Use /vault_add <alias> <address> [pool] [nfpm] [rpc]")
+        return
+    act = active_alias()
+    lines = []
+    for v in rows:
+        star = "⭐" if v["alias"] == act else " "
+        lines.append(f"{star} @{v['alias']}  vault={v['address']}  pool={v.get('pool') or '-'}")
+    await _reply(update, context, "\n".join(lines))
+
+async def vault_add_cmd(update, context):
+    if not _allowed_chat(update): return
+    args = context.args or []
+    if len(args) < 2:
+        await _reply(update, context, "Usage: /vault_add <alias> <vault_addr> [pool_addr] [nfpm] [rpc_url]")
+        return
+    alias, addr = args[0], args[1]
+    pool = args[2] if len(args) >= 3 else None
+    nfpm = args[3] if len(args) >= 4 else None
+    rpc  = args[4] if len(args) >= 5 else None
+    try:
+        vault_add(alias, addr, pool, nfpm, rpc)
+        await _reply(update, context, f"✅ added @{alias} -> {addr}")
+    except Exception as e:
+        await _reply(update, context, f"⚠️ {e}")
+
+async def vault_select_cmd(update, context):
+    if not _allowed_chat(update): return
+    args = context.args or []
+    if not args:
+        await _reply(update, context, "Usage: /vault_select <alias>")
+        return
+    try:
+        vault_set_active(args[0])
+        await _reply(update, context, f"✅ active vault = @{args[0]}")
+    except Exception as e:
+        await _reply(update, context, f"⚠️ {e}")
+
+async def vault_set_pool_cmd(update, context):
+    if not _allowed_chat(update): return
+    args = context.args or []
+    if len(args) < 2:
+        await _reply(update, context, "Usage: /vault_setpool <alias> <pool_addr>")
+        return
+    try:
+        vault_set_pool(args[0], args[1])
+        await _reply(update, context, f"✅ set pool for @{args[0]} = {args[1]}")
+    except Exception as e:
+        await _reply(update, context, f"⚠️ {e}")
+        
 async def balances_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /balances — Show vault free balances, uncollected fees, and an estimate
@@ -350,6 +471,10 @@ async def balances_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        args = context.args or []
+        alias = _resolve_alias_from_args(args)
+        CTX = MVCTX.get_or_create(alias)
+        
         s = CTX.s
         ch = CTX.ch
         obs = CTX.observer.snapshot(twap_window=s.twap_window)
@@ -457,6 +582,9 @@ async def history_cmd(update, context):
     if not _allowed_chat(update):
         return
     try:
+        args = context.args or []
+        alias = _resolve_alias_from_args(args)
+        
         p = Path("bot/state.json")
         if not p.exists():
             await _reply(update, context,"No history yet.")
@@ -484,6 +612,10 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _allowed_chat(update):
         return
     try:
+        args = context.args or []
+        alias = _resolve_alias_from_args(args)
+        CTX = MVCTX.get_or_create(alias)
+        
         obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
         snap = CTX.observer.usd_snapshot()
 
@@ -496,7 +628,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         extras = f"\n<b>Collected fees (cum)</b>: ≈ ${fees_usd_cum:,.2f}"
         text = (
-            f"<b>Vault:</b> <code>{escape(CTX.s.vault)}</code>\n"
+            f"<b>Vault:</b> <code>{escape(CTX.ch.vault.address)}</code>\n"
             f"{prices_html}\n\n{state_html}\n\n{usd_html}{extras}"
         )
         await _reply(update, context, text, parse_mode=ParseMode.HTML)
@@ -604,7 +736,8 @@ async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _allowed_chat(update):
         return
     try:
-        CTX.strategies = load_strategies(os.environ.get("STRATEGIES_FILE"))
+        global STRATEGIES
+        STRATEGIES = load_strategies(os.environ.get("STRATEGIES_FILE"))
         await _reply(update, context,"✅ strategies.json reloaded.")
     except Exception as e:
         await _reply(update, context,f"⚠️ /reload error: {e}")
@@ -614,42 +747,56 @@ async def propose_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _allowed_chat(update):
         return
     try:
+        args = context.args or []
+        alias = _resolve_alias_from_args(args)
+        CTX = MVCTX.get_or_create(alias)
+        v = vault_get(alias) or {}
+        
         obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
 
         # Always show each ACTIVE strategy with its status.
-        strategies = [st for st in CTX.strategies if st.get("active", True)]
+        strategies = [st for st in STRATEGIES if st.get("active", True)]
         if not strategies:
             await _reply(update, context, "ℹ️ No active strategies configured.")
             return
 
         blocks = []
-        for st in strategies:
-            sid = st.get("id", "unknown")
-            fn = handlers.get(sid)
-            if not fn:
-                blocks.append(f"• <b>{escape(sid)}</b>: handler not found.")
-                continue
+        # Ensure registry.get_settings() sees the right values:
+        env_map = {
+            "RPC_URL": v.get("rpc_url") or CTX.s.rpc_url,
+            "VAULT":   v.get("address"),  #or CTX.s.vault,
+            "POOL":    v.get("pool"),     #or CTX.s.pool,
+            "NFPM":    v.get("nfpm"),     #or CTX.s.nfpm,
+        }
+        
+        with _env_override(env_map):
+            for st in strategies:
+                sid = st.get("id", "unknown")
+                fn = handlers.get(sid)
+                if not fn:
+                    blocks.append(f"• <b>{escape(sid)}</b>: handler not found.")
+                    continue
 
-            res = fn(st.get("params", {}), obs)
-            header = f"<b>{escape(sid)}</b> — {escape(st.get('name',''))}"
+                res = fn(st.get("params", {}), obs)
+                header = f"<b>{escape(sid)}</b> — {escape(st.get('name',''))}"
 
-            if res and res.get("trigger"):
-                # Pretty-print details for breakeven strategy; fallback to compact line for others
-                if sid == "breakeven_single_sided":
-                    details_html = _fmt_breakeven_details_html(res)
-                    blocks.append(f"{header}\n✅ <i>{escape(res.get('reason','triggered'))}</i>\n{details_html}")
+                if res and res.get("trigger"):
+                    # Pretty-print details for breakeven strategy; fallback to compact line for others
+                    if sid == "breakeven_single_sided":
+                        details_html = _fmt_breakeven_details_html(res)
+                        blocks.append(f"{header}\n✅ <i>{escape(res.get('reason','triggered'))}</i>\n{details_html}")
+                    else:
+                        lower = res.get("lower")
+                        upper = res.get("upper")
+                        blocks.append(
+                            f"{header}\n✅ <i>{escape(res.get('reason','triggered'))}</i>"
+                            + (f"\nrange: lower=<code>{lower}</code> upper=<code>{upper}</code>" if lower and upper else "")
+                        )
                 else:
-                    lower = res.get("lower")
-                    upper = res.get("upper")
-                    blocks.append(
-                        f"{header}\n✅ <i>{escape(res.get('reason','triggered'))}</i>"
-                        + (f"\nrange: lower=<code>{lower}</code> upper=<code>{upper}</code>" if lower and upper else "")
-                    )
-            else:
-                reason = _reason_when_not_triggered(st, obs, res or {})
-                blocks.append(f"{header}\n❕ <i>{escape(reason)}</i>")
+                    reason = _reason_when_not_triggered(st, obs, res or {})
+                    blocks.append(f"{header}\n❕ <i>{escape(reason)}</i>")
 
-        await _reply(update, context, "\n\n".join(blocks), parse_mode=ParseMode.HTML)
+            await _reply(update, context, "\n\n".join(blocks), parse_mode=ParseMode.HTML)
 
     except Exception as e:
         await _reply(update, context, f"⚠️ /propose error: {e}")
@@ -664,6 +811,9 @@ async def baseline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         args = context.args or []
+        alias = _resolve_alias_from_args(args)
+        CTX = MVCTX.get_or_create(alias)
+
         sub = args[0].lower() if args else "show"
 
         if sub == "set":
@@ -717,19 +867,21 @@ async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not _allowed_chat(update):
         return
-    
-    if CTX.s.read_only_mode:
-        args = context.args or []
-        if len(args) >= 3 and args[2].lower() in ("exec", "execute", "run"):
-            await _reply(update, context,
-                "🔒 Read-only mode is enabled. Execution commands are disabled. "
-                "Unset READ_ONLY_MODE to allow transactions."
-            )
-            return
         
     try:
-        # Parse args: /rebalance <lower> <upper> [exec]
-        args = context.args
+        args = context.args or []
+        alias = _resolve_alias_from_args(args)
+        CTX = MVCTX.get_or_create(alias)
+        
+        if CTX.s.read_only_mode:
+            args = context.args or []
+            if len(args) >= 3 and args[2].lower() in ("exec", "execute", "run"):
+                await _reply(update, context,
+                    "🔒 Read-only mode is enabled. Execution commands are disabled. "
+                    "Unset READ_ONLY_MODE to allow transactions."
+                )
+                return
+        
         if len(args) < 2:
             await _reply(update, context,"Usage: /rebalance <lower> <upper> [exec]")
             return
@@ -769,11 +921,12 @@ async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pre_fees0 = int(pre_obs["uncollected_fees_token0"])
         pre_fees1 = int(pre_obs["uncollected_fees_token1"])
         pre_usdc_per_eth = float(CTX.observer.usd_snapshot().spot_price)
-        
+        meta = CTX.ch.pool_meta() 
+        dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
+            
         # Execution via wrapper (python -m bot.exec)
-        cmd = f"python -m bot.exec --lower {lower} --upper {upper} --execute"
+        cmd = f"python -m bot.exec --lower {lower} --upper {upper} --execute --vault {alias}"
         await _reply(update, context,f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
-
 
         proc = subprocess.run(
             shlex.split(cmd),
@@ -796,9 +949,9 @@ async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
 
-        # ---- ACUMULAR FEES COLETADAS (off-chain) ----
+        # ---- accumulate collected fees (off-chain) ----
         try:
-            _add_collected_fees_to_state(pre_fees0, pre_fees1, pre_usdc_per_eth)
+            _add_collected_fees_to_state(pre_fees0, pre_fees1, pre_usdc_per_eth, dec0, dec1)
         except Exception as e:
             log_warn(f"failed to persist fees_collected_cum: {e}")
             
@@ -840,6 +993,9 @@ async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # Dry-run summary
+        alias = _resolve_alias_from_args(args)
+        CTX = MVCTX.get_or_create(alias)
+        
         ch = CTX.ch
         vs = ch.vault_state()
         token_id = int(vs.get("tokenId", 0) or 0)
@@ -856,7 +1012,8 @@ async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cmd = "python -m bot.exec --vault-exit"
         else:
             cmd = "python -m bot.exec --vault-exit-withdraw"
-
+        cmd += f" --vault {alias}"
+        
         await _reply(update, context, f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
         proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True, env=os.environ)
 
@@ -916,6 +1073,10 @@ def main():
     app.add_handler(CommandHandler("balances", balances_cmd))
     app.add_handler(CommandHandler("baseline", baseline_cmd))
     app.add_handler(CommandHandler("withdraw", withdraw_cmd))
+    app.add_handler(CommandHandler("vault_list", vault_list_cmd))
+    app.add_handler(CommandHandler("vault_add", vault_add_cmd))
+    app.add_handler(CommandHandler("vault_select", vault_select_cmd))
+    app.add_handler(CommandHandler("vault_setpool", vault_set_pool_cmd))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log_info("Telegram runner up. Listening for commands...")
