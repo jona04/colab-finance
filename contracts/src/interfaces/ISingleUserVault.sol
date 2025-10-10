@@ -35,4 +35,10 @@ interface ISingleUserVault is VaultEvents {
 
     /// @notice Returns true if the TWAP deviation against spot is within the configured bound.
     function twapOk() external view returns (bool);
+
+    /// @notice Exits only the pool. Owner-only.
+    function exitPositionToVault() external;
+
+    /// @notice Exits de the pool and the vault. Owner -only.
+    function exitAndWithdrawAll() external;
 }

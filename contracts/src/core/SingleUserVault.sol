@@ -235,6 +235,10 @@ contract SingleUserVault is ISingleUserVault, ReentrancyGuard {
 
     /// @inheritdoc ISingleUserVault
     function withdrawAll() external onlyOwner nonReentrant {
+        _withdrawAll(); // internal helper
+    }
+
+    function _withdrawAll() internal {
         // Transfer all balances of token0 and token1 to owner.
         // This function does not modify the active LP position; if liquidity is present,
         // user should rebalance/decrease to zero and collect before calling withdrawAll.
@@ -270,6 +274,75 @@ contract SingleUserVault is ISingleUserVault, ReentrancyGuard {
     /// @inheritdoc ISingleUserVault
     function twapOk() external view returns (bool) {
         return _twapOkInternal();
+    }
+
+    /// @dev Internal helper: closes the current Uniswap V3 position and leaves all funds idle in the vault.
+    ///      - Collects pending fees
+    ///      - Decreases all liquidity
+    ///      - Collects tokens owed after decrease
+    ///      - Burns the position NFT
+    ///      - Sets positionTokenId = 0
+    function _exitPosition() internal returns (uint256 out0, uint256 out1) {
+        if (positionTokenId == 0) revert VaultErrors.PositionNotInitialized();
+
+        // 1) Collect pending fees before decrease
+        (uint256 fees0, uint256 fees1) = NFPM(nfpm).collect(
+            NFPM.CollectParams({
+                tokenId: positionTokenId,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            })
+        );
+
+        // 2) Decrease all liquidity (if any)
+        (, , , , , , , uint128 liq, , , , ) = NFPM(nfpm).positions(positionTokenId);
+        if (liq > 0) {
+            NFPM(nfpm).decreaseLiquidity(
+                NFPM.DecreaseLiquidityParams({
+                    tokenId: positionTokenId,
+                    liquidity: liq,
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    deadline: block.timestamp + 900
+                })
+            );
+
+            // 3) Collect tokens owed from decrease
+            (uint256 add0, uint256 add1) = NFPM(nfpm).collect(
+                NFPM.CollectParams({
+                    tokenId: positionTokenId,
+                    recipient: address(this),
+                    amount0Max: type(uint128).max,
+                    amount1Max: type(uint128).max
+                })
+            );
+            fees0 += add0;
+            fees1 += add1;
+        }
+
+        // 4) Burn the position NFT and clear storage
+        uint256 oldId = positionTokenId;
+        NFPM(nfpm).burn(positionTokenId);
+        positionTokenId = 0;
+
+        emit Exited(oldId, fees0, fees1);
+        return (fees0, fees1);
+    }
+
+    /// @notice Closes the managed Uniswap V3 position and keeps all funds in the vault (idle).
+    /// @dev Owner-only; does not touch pool config nor cooldown/TWAP.
+    ///      Useful for "pool → vault" consolidation before a final withdrawal.
+    function exitPositionToVault() external onlyOwner poolSet nonReentrant {
+        _exitPosition();
+    }
+
+    /// @notice Closes the position and withdraws all idle balances to the owner in a single call.
+    /// @dev Owner-only; combines exitPositionToVault() + withdrawAll().
+    function exitAndWithdrawAll() external onlyOwner poolSet nonReentrant {
+        _exitPosition();
+        // reuses existing _withdrawAll() behavior (sends both tokens to owner)
+        _withdrawAll();
     }
 
     // -------------------------

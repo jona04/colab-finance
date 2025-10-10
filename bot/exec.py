@@ -71,19 +71,39 @@ def main():
     parser.add_argument("--lower", type=int, required=True, help="Lower tick (multiple of tickSpacing)")
     parser.add_argument("--upper", type=int, required=True, help="Upper tick (multiple of tickSpacing)")
     parser.add_argument("--execute", action="store_true", help="Actually run forge script (otherwise dry-run)")
+    parser.add_argument("--vault-exit", action="store_true", help="Exit position to vault (decrease+collect+burn).")
+    parser.add_argument("--vault-exit-withdraw", action="store_true", help="Exit position and withdraw all to owner.")
+
     args = parser.parse_args()
 
+    mode_exit = bool(args.vault_exit)
+    mode_exit_withdraw = bool(args.vault_exit_withdraw)
+
+    if mode_exit and mode_exit_withdraw:
+        raise RuntimeError("Use only one of --vault-exit OR --vault-exit-withdraw (not both).")
+
+    if not mode_exit and not mode_exit_withdraw:
+        # modo padrão: rebalance — exige lower/upper
+        if args.lower is None or args.upper is None:
+            raise RuntimeError("Rebalance mode requires --lower and --upper.")
+        action_label = f"Rebalance lower={args.lower}, upper={args.upper}"
+    else:
+        # modos de exit: não exigem lower/upper
+        action_label = "Exit position to vault" if mode_exit else "Exit + WithdrawAll to owner"
+        
     s = get_settings()
     log_info(f"Preparing {'EXECUTION' if args.execute else 'DRY-RUN'} for vault={s.vault}")
-    log_info(f"Range suggestion: lower={args.lower}, upper={args.upper}")
+    log_info(action_label)
 
     # export the envs that your Forge script reads via vm.env*
     env = os.environ.copy()
-    env["LOWER_TICK"]   = str(args.lower)
-    env["UPPER_TICK"]   = str(args.upper)
     env["VAULT_ADDRESS"]= s.vault
     env["RPC_SEPOLIA"]  = s.rpc_url  # in case script references it
-
+    
+    if not (mode_exit or mode_exit_withdraw):
+        env["LOWER_TICK"] = str(args.lower)
+        env["UPPER_TICK"] = str(args.upper)
+        
     if not args.execute:
         log_warn("Dry-run only — no transaction sent.")
         return
@@ -97,9 +117,15 @@ def main():
     if not os.path.isdir(contracts_dir):
         raise RuntimeError(f"contracts/ directory not found at {contracts_dir}")
 
-    # Script alvo (pode sobrescrever com FORGE_SCRIPT_FILE env)
-    script_target = env.get("FORGE_SCRIPT_FILE", "script/RebalanceManual.s.sol:RebalanceManual")
-
+    if mode_exit:
+        # override opcional via FORGE_SCRIPT_EXIT_FILE
+        script_target = env.get("FORGE_SCRIPT_EXIT_FILE", "script/VaultExit.s.sol:VaultExit")
+    elif mode_exit_withdraw:
+        # override opcional via FORGE_SCRIPT_EXIT_WITHDRAW_FILE
+        script_target = env.get("FORGE_SCRIPT_EXIT_WITHDRAW_FILE", "script/VaultExitWithdraw.s.sol:VaultExitWithdraw")
+    else:
+        # override opcional via FORGE_SCRIPT_FILE
+        script_target = env.get("FORGE_SCRIPT_FILE", "script/RebalanceManual.s.sol:RebalanceManual")
 
     log_info("Running forge script...")
     try:
@@ -113,7 +139,7 @@ def main():
         ]
         proc = subprocess.run(
             cmd,
-            cwd=contracts_dir,     # <- ponto crucial
+            cwd=contracts_dir,  
             env=env,
             capture_output=True,
             text=True
@@ -136,8 +162,9 @@ def main():
         hist = state.get("exec_history", [])
         hist.append({
             "ts": datetime.now(datetime.UTC).isoformat(),
-            "lower": args.lower,
-            "upper": args.upper,
+            "lower": args.lower if args.lower is not None else None,
+            "upper": args.upper if args.upper is not None else None,
+            "mode": ("exit_withdraw" if mode_exit_withdraw else ("exit" if mode_exit else "rebalance")),
             "tx": txh,
             "stdout_tail": proc.stdout[-3000:],
         })

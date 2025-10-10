@@ -330,6 +330,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Uni Range Bot is online.\n"
         "Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload"
         "/history, /balances, /baseline set, /baseline show"
+        "/withdraw pool, /withdraw all"
     )
 
 
@@ -821,6 +822,58 @@ async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, context,f"⚠️ /rebalance error: {e}")
 
 
+async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /withdraw pool [exec]        -> exit position to vault (pool -> vault)
+    /withdraw all [exec]         -> exit position and withdraw all to owner
+    """
+    if not _allowed_chat(update):
+        return
+
+    args = context.args or []
+    if not args or args[0].lower() not in ("pool", "all"):
+        await _reply(update, context, "Usage:\n/withdraw pool [exec]\n/withdraw all [exec]")
+        return
+
+    mode = args[0].lower()
+    do_exec = (len(args) >= 2 and args[1].lower() in ("exec", "execute", "run"))
+
+    try:
+        # Dry-run summary
+        ch = CTX.ch
+        vs = ch.vault_state()
+        token_id = int(vs.get("tokenId", 0) or 0)
+        lower, upper, liq = int(vs["lower"]), int(vs["upper"]), int(vs["liq"])
+        msg = [f"Mode={mode} | tokenId={token_id} | liq={liq} | ticks=[{lower},{upper}]"]
+
+        if not do_exec:
+            msg.insert(0, "🧪 Dry-run")
+            await _reply(update, context, "\n".join(msg))
+            return
+
+        # Execute via existing wrapper (same pattern as /rebalance)
+        if mode == "pool":
+            cmd = "python -m bot.exec --vault-exit"
+        else:
+            cmd = "python -m bot.exec --vault-exit-withdraw"
+
+        await _reply(update, context, f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
+        proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True, env=os.environ)
+
+        if proc.returncode != 0:
+            await _reply(update, context,
+                f"❌ Execution failed:\n<pre><code>{escape(proc.stderr or proc.stdout)[:3500]}</code></pre>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        out = proc.stdout[-3000:]
+        await _reply(update, context, f"✅ Done.\n<pre><code>{escape(out)}</code></pre>", parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        await _reply(update, context, f"⚠️ /withdraw error: {e}")
+        
+
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Default handler for unrecognized messages.
@@ -829,7 +882,8 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await _reply(update, context,
         "Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload"
-        "/history, /balances, /baseline set, /baseline show")
+        "/history, /balances, /baseline set, /baseline show,"
+        "/withdraw pool, /withdraw all")
 
 
 def _require_env(name: str) -> str:
@@ -861,6 +915,7 @@ def main():
     app.add_handler(CommandHandler("reload", reload_cmd))
     app.add_handler(CommandHandler("balances", balances_cmd))
     app.add_handler(CommandHandler("baseline", baseline_cmd))
+    app.add_handler(CommandHandler("withdraw", withdraw_cmd))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log_info("Telegram runner up. Listening for commands...")

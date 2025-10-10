@@ -14,4 +14,7 @@ interface VaultEvents {
 
     /// @notice Emitted after funds are withdrawn from the vault.
     event Withdrawn(uint amount0, uint amount1);
+
+    /// @notice Emitted after exit the vault/pool.
+    event Exited(uint256 tokenId, uint256 sent0, uint256 sent1);
 }
