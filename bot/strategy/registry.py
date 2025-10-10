@@ -74,7 +74,7 @@ Production cautions
   for accurate breakeven math. If you later want strictly pure handlers,
   refactor to inject the needed context (inventory, decimals, baseline, etc.).
 """
-
+import os
 import json
 import math
 import time
@@ -84,7 +84,7 @@ from typing import Dict, Any, Tuple
 from ..config import get_settings
 from ..chain import Chain
 from ..utils.log import log_info, log_warn
-
+from ..state_utils import load as _state_load, save as _state_save, path_for as _state_path_for
 
 # ---------- small math helpers (dimensionless √price and price views) ----------
 
@@ -178,14 +178,8 @@ def _usd_value_of_token_amount(token_index: int, amount_raw: int,
 
 # ---------- Live inventory helpers (price-only stock) ----------
 
-def _load_bot_state() -> Dict[str, Any]:
-    p = Path("bot/state/default.json")
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return {}
+def _load_bot_state(alias: str) -> Dict[str, Any]:
+    return _state_load(alias)
 
 def _live_inventory_raw(ch: Chain, fees_collected_cum: Dict[str, int]) -> Tuple[int, int]:
     """
@@ -264,7 +258,8 @@ def _usd_at_lower_single_sided_token1(amount1_raw: int,
 def breakeven_single_sided(params: Dict[str, Any], obs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Breakeven single-sided reallocator (incremental widening).
-
+    This registry reads per-vault state from bot/state/<ALIAS>.json where ALIAS is provided via environment.
+    
     Trigger conditions:
       - Price must be OUT-OF-RANGE for at least `minimum_minutes_out_of_range`.
       - Baseline (vault_initial_usd) must be set.
@@ -305,7 +300,18 @@ def breakeven_single_sided(params: Dict[str, Any], obs: Dict[str, Any]) -> Dict[
 
     # Chain & meta
     s = get_settings()
-    ch = Chain(s.rpc_url, s.pool, s.nfpm, s.vault)
+    alias = os.environ.get("ALIAS", "default")
+
+    rpc_url = os.environ.get("RPC_URL", s.rpc_url)
+    vault_addr = os.environ.get("VAULT", getattr(s, "vault", ""))
+    pool_addr  = os.environ.get("POOL", getattr(s, "pool", ""))
+    nfpm_addr  = os.environ.get("NFPM", getattr(s, "nfpm", ""))
+    
+    if not (rpc_url and vault_addr and pool_addr and nfpm_addr):
+        return {"trigger": False, "reason": "Missing RPC/POOL/NFPM/VAULT for strategy evaluation."}
+
+
+    ch = Chain(rpc_url, pool_addr, nfpm_addr, vault_addr)
     meta = ch.pool_meta()
     dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
 
@@ -315,7 +321,7 @@ def breakeven_single_sided(params: Dict[str, Any], obs: Dict[str, Any]) -> Dict[
         return {"trigger": False, "reason": f"Token detection error: {e}"}
 
     # Baseline & cum fees
-    st = _load_bot_state()
+    st = _load_bot_state(alias)
     baseline_usd = float(st.get("vault_initial_usd", 0.0) or 0.0)
     if baseline_usd <= 0.0:
         return {"trigger": False, "reason": "Baseline not set. Use /baseline set."}

@@ -4,7 +4,9 @@ Main bot loop — observes the vault, evaluates JSON-driven strategies, and prin
 import os
 import hashlib
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
 from bot.utils.formatters import fmt_alert_range
 from bot.config import get_settings
 from bot.chain import Chain
@@ -47,30 +49,113 @@ def evaluate_all(strategies, obs):
             results.append({"id": strat["id"], **res})
     return results
 
+def _bool(s: str | None) -> bool:
+    return str(s or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
-def main():
+
+def _first(*vals: str | None) -> str | None:
+    """
+    Returns the first non-empty string in vals (truthy and length>0), else None.
+    """
+    for v in vals:
+        if v and str(v).strip():
+            return str(v).strip()
+    return None
+
+def resolve_endpoints() -> tuple[str, str, str, str, str]:
+    """
+    Resolve (alias, rpc_url, pool, nfpm, vault) from environment with sane fallbacks.
+
+    - ALIAS from env or "default".
+    - RPC_URL from RPC_URL or RPC_SEPOLIA or Settings.rpc_url (fallback).
+    - VAULT from VAULT or VAULT_ADDRESS (required).
+    - POOL  from POOL or POOL_ADDRESS (required).
+    - NFPM  from NFPM or NFPM_ADDRESS (required).
+    """
     s = get_settings()
-    ch = Chain(s.rpc_url, s.pool, s.nfpm, s.vault)
-    strategies = load_strategies(os.environ.get("STRATEGIES_FILE"))
 
+    alias = os.environ.get("ALIAS", "default")
+
+    rpc_url = _first(os.environ.get("RPC_URL"), os.environ.get("RPC_SEPOLIA"), s.rpc_url)
+    vault = _first(os.environ.get("VAULT"), os.environ.get("VAULT_ADDRESS"))
+    pool = _first(os.environ.get("POOL"), os.environ.get("POOL_ADDRESS"))
+    nfpm = _first(os.environ.get("NFPM"), os.environ.get("NFPM_ADDRESS"))
+
+    missing = [k for k, v in {
+        "RPC_URL": rpc_url,
+        "VAULT": vault,
+        "POOL": pool,
+        "NFPM": nfpm,
+    }.items() if not v]
+    if missing:
+        raise RuntimeError(f"Missing endpoints: {', '.join(missing)}")
+
+    return alias, rpc_url, pool, nfpm, vault
+
+@contextmanager
+def _env_override(mapping: dict[str, str | None]):
+    """
+    Temporarily override os.environ keys present in mapping.
+    Restores previous values on exit.
+    """
+    old = {}
+    try:
+        for k, v in mapping.items():
+            old[k] = os.environ.get(k)
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = str(v)
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+                
+def main():
+    """
+    Bootstraps a per-vault loop:
+    - Builds Chain/Observer pointed at the resolved vault.
+    - Loads strategies and evaluates them on each tick.
+    - Emits alerts via Telegram with cooldown/dedupe using StateManager.
+    """
+    # -------- resolve endpoints (per-vault) --------
+    alias, rpc_url, pool, nfpm, vault = resolve_endpoints()
+    
+    # -------- wire up chain + observer + state path (per alias) --------
+    ch = Chain(rpc_url, pool, nfpm, vault)
+    state_path = str(path_for(alias))
+    observer = VaultObserver(ch, state_path=state_path)
+    
     # Telegram + state manager for dedupe/cooldown
     tg = TelegramClient()
-    alias = os.environ.get("ALIAS") or "default"
-    sm = StateManager(str(path_for(alias)))
+    sm = StateManager(state_path)
 
-    observer = VaultObserver(ch, state_path=str(path_for(alias)))
+    # Load strategies once (they'll read env via registry handlers)
+    strategies = load_strategies(os.environ.get("STRATEGIES_FILE"))
 
-    # Use centralized thresholds from Settings
+    # Settings still supply timing/cooldowns
+    s = get_settings()
     cooldown = int(s.alerts_cooldown_sec)
     dedupwin = int(s.alerts_dedup_window_sec)
-    
-    # internal keys for alert timers/counters
+
+    # internal keys for alert timers/counters (per state file)
     KEY_RPC_FAIL_COUNT = "rpc_fail_count"
     KEY_TWAP_FALSE_SINCE = "twap_false_since"
-    KEY_RANGE_OUT_SINCE = "range_out_since"  # we keep a local override to observer.state["out_since"]
+    KEY_RANGE_OUT_SINCE = "range_out_since"
 
+    log_info(f"Observer up for @{alias}. Polling on-chain state...")
 
-    log_info("Observer up. Polling on-chain state...")
+    # Pre-build env map so registry.py resolves the same vault context
+    env_map = {
+        "ALIAS": alias,
+        "RPC_URL": rpc_url,
+        "POOL": pool,
+        "NFPM": nfpm,
+        "VAULT": vault,
+    }
 
     while True:
         try:
@@ -171,7 +256,9 @@ def main():
                     sm.mark_alert_sent("fees_high", payload_hash)
                     
             # ---------- STRATEGY SIGNALS ----------
-            signals = evaluate_all(strategies, obs)
+            with _env_override(env_map):
+                signals = evaluate_all(strategies, obs)
+                
             if signals:
                 for sig in signals:
                     base_msg = f"[{sig['id']}] {sig['reason']} | action={sig.get('action','')}"

@@ -58,6 +58,7 @@ from bot.vault_registry import (
 )
 from bot.state_utils import path_for
 from bot.state_utils import load as _state_load, save as _state_save
+import re
 
 getcontext().prec = 60  # precisão boa para os cálculos de sqrt/amounts
 
@@ -383,13 +384,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not _allowed_chat(update):
         return
-    await _reply(update, context,
-    "👋 Uni Range Bot is online.\n"
-    "Commands: /status [@alias], /propose [@alias], /rebalance <lower> <upper> [exec] [@alias], /reload\n"
-    "/history [@alias], /balances [@alias], /baseline <set|show> [@alias]\n"
-    "/withdraw <pool|all> [exec] [@alias]\n"
-    "/vault_add <alias> <vault> [pool] [nfpm] [rpc], /vault_select <alias>, /vault_list, /vault_setpool <alias> <pool>"
-)
+    await _reply(
+        update,
+        context,
+        (
+            "👋 Uni Range Bot online.\n"
+            "Comandos:\n"
+            "• /status [@alias]\n"
+            "• /balances [@alias]\n"
+            "• /history [@alias]\n"
+            "• /baseline <set|show> [@alias]\n"
+            "• /propose [@alias]\n"
+            "• /rebalance <lower> <upper> [exec] [@alias]\n"
+            "• /withdraw <pool|all> [exec] [@alias]\n"
+            "• /reload\n"
+            "\n"
+            "Gestão de vaults:\n"
+            "• /vault_create <alias> <nfpm> <pool> [rpc]   (deploy + registrar + tornar ativo)\n"
+            "• /vault_add <alias> <vault> [pool] [nfpm] [rpc]\n"
+            "• /vault_select <alias>\n"
+            "• /vault_list\n"
+            "• /vault_setpool <alias> <pool>\n"
+            "\n"
+            "Dica: acrescente @alias no fim do comando p/ agir em um vault específico.\n"
+            "Ex.: /status @ethusdc | /rebalance 181800 182200 exec @ethusdc"
+        )
+    )
 
 
 async def vault_list_cmd(update, context):
@@ -750,9 +770,10 @@ async def propose_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Ensure registry.get_settings() sees the right values:
         env_map = {
             "RPC_URL": v.get("rpc_url") or CTX.s.rpc_url,
-            "VAULT":   v.get("address"),  #or CTX.s.vault,
-            "POOL":    v.get("pool"),     #or CTX.s.pool,
-            "NFPM":    v.get("nfpm"),     #or CTX.s.nfpm,
+            "VAULT":   v.get("address"),
+            "POOL":    v.get("pool"),
+            "NFPM":    v.get("nfpm"),
+            "ALIAS":   alias,
         }
         
         with _env_override(env_map):
@@ -1011,6 +1032,28 @@ async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         out = proc.stdout[-3000:]
         await _reply(update, context, f"✅ Done.\n<pre><code>{escape(out)}</code></pre>", parse_mode=ParseMode.HTML)
 
+        # persists history per alias
+        try:
+            # try extract tx hash from stout
+            txh = None
+            m = re.search(r"transactionHash\s+(0x[0-9a-fA-F]{64})", proc.stdout or "")
+            if m:
+                txh = m.group(1)
+
+            st = _state_load(alias)
+            hist = st.get("exec_history", [])
+            hist.append({
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "mode": ("exit" if mode == "pool" else "exit_withdraw"),
+                "lower": None,
+                "upper": None,
+                "tx": txh,
+                "stdout_tail": out,
+            })
+            st["exec_history"] = hist[-50:]
+            _state_save(alias, st)
+        except Exception as _e:
+            log_warn(f"failed to append withdraw history for @{alias}: {_e}")
     except Exception as e:
         await _reply(update, context, f"⚠️ /withdraw error: {e}")
         
@@ -1021,10 +1064,32 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not _allowed_chat(update):
         return
-    await _reply(update, context,
-        "Commands: /status, /propose, /rebalance <lower> <upper> [exec], /reload"
-        "/history, /balances, /baseline set, /baseline show,"
-        "/withdraw pool, /withdraw all")
+    await _reply(
+        update,
+        context,
+        (
+            "👋 Uni Range Bot online.\n"
+            "Comandos:\n"
+            "• /status [@alias]\n"
+            "• /balances [@alias]\n"
+            "• /history [@alias]\n"
+            "• /baseline <set|show> [@alias]\n"
+            "• /propose [@alias]\n"
+            "• /rebalance <lower> <upper> [exec] [@alias]\n"
+            "• /withdraw <pool|all> [exec] [@alias]\n"
+            "• /reload\n"
+            "\n"
+            "Gestão de vaults:\n"
+            "• /vault_create <alias> <nfpm> <pool> [rpc]   (deploy + registrar + tornar ativo)\n"
+            "• /vault_add <alias> <vault> [pool] [nfpm] [rpc]\n"
+            "• /vault_select <alias>\n"
+            "• /vault_list\n"
+            "• /vault_setpool <alias> <pool>\n"
+            "\n"
+            "Dica: acrescente @alias no fim do comando p/ agir em um vault específico.\n"
+            "Ex.: /status @ethusdc | /rebalance 181800 182200 exec @ethusdc"
+        )
+    )
 
 
 def _require_env(name: str) -> str:
