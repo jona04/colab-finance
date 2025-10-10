@@ -35,7 +35,7 @@ tmp/
 *.tmp
 
 # --- Project-specific (bot) ---
-bot/state.json
+bot/state/*
 bot/*.sqlite3
 bot/*.db
 bot/.cache/

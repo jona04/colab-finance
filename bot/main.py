@@ -13,7 +13,7 @@ from bot.observer.state_manager import StateManager
 from bot.telegram_client import TelegramClient
 from bot.strategy.registry import handlers
 from bot.utils.log import log_info, log_warn
-
+from bot.state_utils import path_for
 
 def load_strategies(path: str | None = None):
     """
@@ -51,12 +51,14 @@ def evaluate_all(strategies, obs):
 def main():
     s = get_settings()
     ch = Chain(s.rpc_url, s.pool, s.nfpm, s.vault)
-    observer = VaultObserver(ch)
     strategies = load_strategies(os.environ.get("STRATEGIES_FILE"))
 
     # Telegram + state manager for dedupe/cooldown
     tg = TelegramClient()
-    sm = StateManager("bot/state.json")
+    alias = os.environ.get("ALIAS") or "default"
+    sm = StateManager(str(path_for(alias)))
+
+    observer = VaultObserver(ch, state_path=str(path_for(alias)))
 
     # Use centralized thresholds from Settings
     cooldown = int(s.alerts_cooldown_sec)

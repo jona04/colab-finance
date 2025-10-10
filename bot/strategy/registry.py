@@ -179,7 +179,7 @@ def _usd_value_of_token_amount(token_index: int, amount_raw: int,
 # ---------- Live inventory helpers (price-only stock) ----------
 
 def _load_bot_state() -> Dict[str, Any]:
-    p = Path("bot/state.json")
+    p = Path("bot/state/default.json")
     if not p.exists():
         return {}
     try:

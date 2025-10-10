@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from bot.utils.log import log_info, log_warn
 from bot.config import get_settings
 from bot.vault_registry import get as vault_get
+from bot.state_utils import load as _state_load, save as _state_save
 
 load_dotenv()
 
@@ -94,10 +95,12 @@ def main():
         action_label = "Exit position to vault" if mode_exit else "Exit + WithdrawAll to owner"
         
     s = get_settings()
+    alias_for_state = None
     if args.vault:
         if args.vault.startswith("0x"):
             vault_addr = args.vault
         else:
+            alias_for_state = args.vault
             v = vault_get(args.vault)
             if not v:
                 raise RuntimeError("unknown vault alias in --vault")
@@ -167,8 +170,7 @@ def main():
         m = re.search(r"transactionHash\s+(0x[0-9a-fA-F]{64})", proc.stdout)
         if m: txh = m.group(1)
 
-        state_path = Path("bot/state.json")
-        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        state = _state_load(alias_for_state or "default")
         hist = state.get("exec_history", [])
         hist.append({
             "ts": datetime.now(datetime.UTC).isoformat(),
@@ -179,7 +181,7 @@ def main():
             "stdout_tail": proc.stdout[-3000:],
         })
         state["exec_history"] = hist[-50:]
-        state_path.write_text(json.dumps(state, indent=2))
+        _state_save(alias_for_state or "default", state)
 
         log_info("Forge script OK.")
     except FileNotFoundError:

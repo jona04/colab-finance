@@ -56,6 +56,8 @@ from bot.vault_registry import (
     get as vault_get,
     set_pool as vault_set_pool
 )
+from bot.state_utils import path_for
+from bot.state_utils import load as _state_load, save as _state_save
 
 getcontext().prec = 60  # precisão boa para os cálculos de sqrt/amounts
 
@@ -294,16 +296,13 @@ def fmt_usd_panel(snap) -> str:
 
 class AppCtx:
     """
-    Lightweight application context that holds shared, long-lived objects:
-      - settings (env-based)
-      - chain (web3 contracts)
-      - observer (reads on-chain & derives metrics)
-      - strategies (JSON-driven configuration)
+    Holds per-vault context (Chain + Observer + strategies) bound to one alias.
     """
-    def __init__(self,rpc_url: str, pool_addr: str, nfpm_addr: str, vault_addr: str):
+    def __init__(self, alias: str, rpc_url: str, pool_addr: str, nfpm_addr: str, vault_addr: str):
+        self.alias = alias
         self.s = get_settings()
         self.ch = Chain(rpc_url, pool_addr, nfpm_addr, vault_addr)
-        self.observer = VaultObserver(self.ch)
+        self.observer = VaultObserver(self.ch, state_path=str(path_for(alias)))
         self.strategies = load_strategies(os.environ.get("STRATEGIES_FILE"))
 
 class MultiVaultCtx:
@@ -321,8 +320,8 @@ class MultiVaultCtx:
         if not v:
             raise RuntimeError(f"unknown vault alias: {alias}")
         rpc  = v.get("rpc_url") or self.s.rpc_url
-        nfpm = v.get("nfpm")   #or self.s.nfpm
-        pool = v.get("pool")   #or self.s.pool
+        nfpm = v.get("nfpm")
+        pool = v.get("pool")
         addr = v["address"]
 
         ctx = AppCtx(rpc, pool, nfpm, addr)
@@ -345,21 +344,11 @@ def _resolve_alias_from_args(args) -> str:
     return a
 
 
-def _load_bot_state() -> dict:
-    p = Path("bot/state.json")
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            return {}
-    return {}
+def _load_bot_state_for(alias: str) -> dict:
+    return _state_load(alias)
 
-def _save_bot_state(d: dict):
-    p = Path("bot/state.json")
-    try:
-        p.write_text(json.dumps(d, indent=2))
-    except Exception:
-        pass
+def _save_bot_state_for(alias: str, d: dict):
+    _state_save(alias, d)
 
 def _add_collected_fees_to_state(
     pre_exec_fees0_raw: int,
@@ -367,12 +356,13 @@ def _add_collected_fees_to_state(
     usdc_per_eth: float,
     dec0: int,
     dec1: int,
+    alias: str
 ):
     """
     Called only after a successful on-chain action.
     Adds *pre-exec* uncollected fees snapshot into off-chain cumulative counters.
     """
-    st = _load_bot_state()
+    st = _load_bot_state_for(alias)
     fees_col = st.get("fees_collected_cum", {"token0_raw": 0, "token1_raw": 0})
     fees_col["token0_raw"] = int(fees_col.get("token0_raw", 0) or 0) + int(pre_exec_fees0_raw or 0)
     fees_col["token1_raw"] = int(fees_col.get("token1_raw", 0) or 0) + int(pre_exec_fees1_raw or 0)
@@ -385,7 +375,7 @@ def _add_collected_fees_to_state(
     st["fees_cum_usd"] = float(st.get("fees_cum_usd", 0.0) or 0.0) + add_usd
     st["last_fees_update_ts"] = datetime.utcnow().isoformat() + "Z"
 
-    _save_bot_state(st)
+    _save_bot_state_for(alias, st)
     
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -585,11 +575,7 @@ async def history_cmd(update, context):
         args = context.args or []
         alias = _resolve_alias_from_args(args)
         
-        p = Path("bot/state.json")
-        if not p.exists():
-            await _reply(update, context,"No history yet.")
-            return
-        st = json.loads(p.read_text())
+        st = _load_bot_state_for(alias)
         hist = st.get("exec_history", [])
         if not hist:
             await _reply(update, context,"No history yet.")
@@ -623,7 +609,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state_html = fmt_state_block(obs, snap.spot_price, CTX.s.twap_window)
         usd_html = fmt_usd_panel(snap)
 
-        st = _load_bot_state()
+        st = _load_bot_state_for(alias)
         fees_usd_cum = float(st.get("fees_cum_usd", 0.0) or 0.0)
         
         extras = f"\n<b>Collected fees (cum)</b>: ≈ ${fees_usd_cum:,.2f}"
@@ -698,7 +684,7 @@ def _fmt_breakeven_details_html(s: dict) -> str:
     return "\n".join(lines)
 
 
-def _reason_when_not_triggered(strat: dict, obs: dict, res: dict) -> str:
+def _reason_when_not_triggered(strat: dict, obs: dict, res: dict, alias: str) -> str:
     """
     Produce a human-friendly reason when a strategy did not trigger.
     Uses the strategy's own 'reason' if present; otherwise derives a sensible default.
@@ -719,7 +705,7 @@ def _reason_when_not_triggered(strat: dict, obs: dict, res: dict) -> str:
             return f"Outside for ~{minutes_out:.1f} min (< required {min_minutes:.1f} min)."
         # Baseline missing?
         try:
-            st = _load_bot_state()
+            st = _load_bot_state_for(alias)
             if float(st.get("vault_initial_usd", 0.0) or 0.0) <= 0.0:
                 return "Baseline not set. Use /baseline set."
         except Exception:
@@ -793,7 +779,7 @@ async def propose_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             + (f"\nrange: lower=<code>{lower}</code> upper=<code>{upper}</code>" if lower and upper else "")
                         )
                 else:
-                    reason = _reason_when_not_triggered(st, obs, res or {})
+                    reason = _reason_when_not_triggered(st, obs, res or {}, alias)
                     blocks.append(f"{header}\n❕ <i>{escape(reason)}</i>")
 
             await _reply(update, context, "\n\n".join(blocks), parse_mode=ParseMode.HTML)
@@ -819,10 +805,10 @@ async def baseline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if sub == "set":
             snap = CTX.observer.usd_snapshot()  # já exclui fees coletadas
             # grava no state
-            st = _load_bot_state()
+            st = _load_bot_state_for(alias)
             st["vault_initial_usd"] = float(snap.usd_value)
             st["baseline_set_ts"] = datetime.utcnow().isoformat() + "Z"
-            _save_bot_state(st)
+            _save_bot_state_for(alias, st)
             await _reply(update, context,
                 f"✅ Baseline set.\n"
                 f"vault_initial_usd=${snap.usd_value:,.2f}  (preço-apenas, fees coletadas excluídas)"
@@ -830,7 +816,7 @@ async def baseline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # default: show
-        st = _load_bot_state()
+        st = _load_bot_state_for(alias)
         vinit = st.get("vault_initial_usd", None)
         fees_usd_cum = float(st.get("fees_cum_usd", 0.0) or 0.0)
         if vinit is None:
@@ -951,23 +937,21 @@ async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ---- accumulate collected fees (off-chain) ----
         try:
-            _add_collected_fees_to_state(pre_fees0, pre_fees1, pre_usdc_per_eth, dec0, dec1)
+            _add_collected_fees_to_state(pre_fees0, pre_fees1, pre_usdc_per_eth, dec0, dec1, alias)
         except Exception as e:
             log_warn(f"failed to persist fees_collected_cum: {e}")
             
-        # Append entry to bot/state.json (best-effort)
         try:
-            state_path = Path("bot/state.json")
-            state = json.loads(state_path.read_text()) if state_path.exists() else {}
-            history = state.get("exec_history", [])
+            st = _load_bot_state_for(alias)
+            history = st.get("exec_history", [])
             history.append({
                 "ts": datetime.utcnow().isoformat() + "Z",
                 "lower": lower,
                 "upper": upper,
                 "stdout_tail": out,
             })
-            state["exec_history"] = history[-50:]
-            state_path.write_text(json.dumps(state, indent=2))
+            st["exec_history"] = history[-50:]
+            _save_bot_state_for(alias, st)
         except Exception:
             pass
 

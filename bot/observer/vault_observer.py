@@ -52,7 +52,7 @@ class VaultObserver:
     High-level observer that uses Chain to read on-chain state and derive strategy metrics.
     """
 
-    def __init__(self, chain: Chain, state_path: str = "bot/state.json"):
+    def __init__(self, chain: Chain, state_path: str = "bot/state/default.json"):
         self.chain = chain
         self.state_path = state_path
         self.state = self._load_state()
