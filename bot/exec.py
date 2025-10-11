@@ -95,7 +95,7 @@ def _now_iso() -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Manual vault rebalance executor.")
-        # rebalance
+    # rebalance
     parser.add_argument("--lower", type=int, help="Lower tick (multiple of tickSpacing)")
     parser.add_argument("--upper", type=int, help="Upper tick (multiple of tickSpacing)")
     # modes
@@ -103,6 +103,7 @@ def main():
     parser.add_argument("--vault-exit", action="store_true", help="Exit position to vault (decrease+collect+burn).")
     parser.add_argument("--vault-exit-withdraw", action="store_true", help="Exit position and withdraw all to owner.")
     parser.add_argument("--deposit", action="store_true", help="Deposit ERC20 into the vault (simple transfer).")
+    parser.add_argument("--collect", action="store_true", help="Collect pending fees into the vault (no liquidity change).")
     # deposit args
     parser.add_argument("--token", type=str, help="ERC20 token address to deposit")
     parser.add_argument("--amount", type=str, help="Human amount (e.g., 1000.5)")
@@ -112,10 +113,14 @@ def main():
     
     args = parser.parse_args()
 
+    mode_collect = bool(args.collect)
     mode_exit = bool(args.vault_exit)
     mode_exit_withdraw = bool(args.vault_exit_withdraw)
     mode_deposit = bool(args.deposit)
-    mode_rebalance = not (mode_exit or mode_exit_withdraw or mode_deposit)
+    mode_rebalance = not (mode_exit or mode_exit_withdraw or mode_deposit or mode_collect)
+
+    if sum([mode_rebalance, mode_exit, mode_exit_withdraw, mode_deposit, mode_collect]) != 1:
+        raise RuntimeError("Choose exactly one mode: rebalance | --vault-exit | --vault-exit-withdraw | --deposit | --collect")
 
     if mode_exit and mode_exit_withdraw:
         raise RuntimeError("Use only one of --vault-exit OR --vault-exit-withdraw (not both).")
@@ -138,10 +143,12 @@ def main():
         action_label = "Exit position to vault"
     elif mode_exit_withdraw:
         action_label = "Exit + WithdrawAll to owner"
-    else:  # deposit
+    elif mode_deposit:
         if not args.token or not args.amount:
             raise RuntimeError("Deposit mode requires --token and --amount.")
         action_label = f"Deposit token={args.token} amount={args.amount}"
+    else:  # collect
+        action_label = "Collect pending fees to vault"
         
     s = get_settings()
     vault_addr, v = _resolve_vault_and_ctx(args.vault)
@@ -199,6 +206,8 @@ def main():
         script_target = env.get("FORGE_SCRIPT_EXIT_WITHDRAW_FILE", "script/VaultExitWithdraw.s.sol:VaultExitWithdraw")
     elif mode_deposit:
         script_target = env.get("FORGE_SCRIPT_DEPOSIT_FILE", "script/VaultDeposit.s.sol:VaultDeposit")
+    elif mode_collect:
+        script_target = env.get("FORGE_SCRIPT_COLLECT_FILE", "script/VaultCollect.s.sol:VaultCollect")
     else:
         script_target = env.get("FORGE_SCRIPT_FILE", "script/RebalanceManual.s.sol:RebalanceManual")
 
@@ -243,6 +252,7 @@ def main():
             "stdout_tail": proc.stdout[-3000:],
         })
         state["exec_history"] = hist[-50:]
+        
         if mode_deposit:
             deps = state.get("deposits", [])
             deps.append({
@@ -253,6 +263,13 @@ def main():
             })
             state["deposits"] = deps[-200:]
 
+        if mode_collect:
+            col = state.get("collect_history", [])
+            col.append({
+                "ts": _now_iso(),
+                "tx": txh,
+            })
+            state["collect_history"] = col[-200:]
         _state_save(alias_for_state, state)
 
         log_info("Forge script OK.")

@@ -416,4 +416,28 @@ contract SingleUserVault is ISingleUserVault, ReentrancyGuard {
         (,,,,,,,,,, uint128 t0, uint128 t1) = NFPM(nfpm).positions(positionTokenId);
         return (t0, t1);
     }
+
+    /// @notice Collects pending fees from the current Uniswap V3 position into the vault.
+    /// @dev Owner-only; does not change liquidity nor burns the NFT.
+    ///      Emits `Collected(fees0, fees1)`. Reverts if no position is opened.
+    function collectFees()
+        external
+        onlyOwner
+        poolSet
+        nonReentrant
+        returns (uint256 fees0, uint256 fees1)
+    {
+        if (positionTokenId == 0) revert VaultErrors.PositionNotInitialized();
+
+        (fees0, fees1) = NFPM(nfpm).collect(
+            NFPM.CollectParams({
+                tokenId: positionTokenId,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            })
+        );
+
+        emit Collected(fees0, fees1);
+    }
 }

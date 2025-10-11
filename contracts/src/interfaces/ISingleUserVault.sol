@@ -41,4 +41,6 @@ interface ISingleUserVault is VaultEvents {
 
     /// @notice Exits de the pool and the vault. Owner -only.
     function exitAndWithdrawAll() external;
+
+    function collectFees() external returns (uint256 fees0, uint256 fees1);
 }

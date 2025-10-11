@@ -17,4 +17,9 @@ interface VaultEvents {
 
     /// @notice Emitted after exit the vault/pool.
     event Exited(uint256 tokenId, uint256 sent0, uint256 sent1);
+
+    /// @notice Emitted when fees are collected without changing liquidity.
+    /// @param fees0 Amount of token0 fees collected.
+    /// @param fees1 Amount of token1 fees collected.
+    event Collected(uint256 fees0, uint256 fees1);
 }

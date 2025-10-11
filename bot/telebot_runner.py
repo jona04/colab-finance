@@ -1148,7 +1148,112 @@ async def deposit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await _reply(update, context, f"⚠️ /deposit error: {e}")
         
+
+async def collect_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /collect [exec] [@alias]
+
+    Dry-run:
+      - Shows current uncollected fees (token0/token1 + USD estimate) for the active position.
+    Exec:
+      - Runs `python -m bot.exec --collect --vault @alias --execute`
+      - Upon success, we add PRE-EXEC uncollected fees to off-chain cumulative counters,
+        just like we do in /rebalance, and append a short entry to exec_history and collect_history.
+    """
+    if not _allowed_chat(update):
+        return
+
+    try:
+        args = context.args or []
+        alias = _resolve_alias_from_args(args)  # supports trailing @alias
+        do_exec = False
+        if args and len(args) > 0 and args[0].lower() in ("exec", "execute", "run"):
+            do_exec = True
+
+        CTX = MVCTX.get_or_create(alias)
+        ch = CTX.ch
+
+        # Snapshot for pre-exec fees and USD conversion
+        obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
+        pre_fees0_raw = int(obs.get("uncollected_fees_token0", 0))
+        pre_fees1_raw = int(obs.get("uncollected_fees_token1", 0))
+        snap = CTX.observer.usd_snapshot()  # spot USDC/ETH
+        usdc_per_eth = float(snap.spot_price)
+
+        meta = ch.pool_meta()
+        dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
+        sym0, sym1 = meta["sym0"], meta["sym1"]
+
+        # Humanize for dry-run
+        pre_fees0 = pre_fees0_raw / (10 ** dec0)
+        pre_fees1 = pre_fees1_raw / (10 ** dec1)
+        pre_fees_usd = pre_fees0 + pre_fees1 * usdc_per_eth
+
+        if not do_exec:
+            msg = (
+                "🧪 Dry-run collect\n"
+                f"• alias=@{alias}\n"
+                f"• uncollected: {pre_fees0:.6f} {sym0} + {pre_fees1:.6f} {sym1} (≈ ${pre_fees_usd:.4f})\n\n"
+                "To execute: /collect exec [@alias]"
+            )
+            await _reply(update, context, msg)
+            return
+
+        # Execute collect via exec.py
+        cmd = f"python -m bot.exec --collect --vault @{alias} --execute"
+        await _reply(update, context, f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
+        proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True, env=os.environ)
+
+        if proc.returncode != 0:
+            await _reply(update, context,
+                f"❌ Execution failed:\n<pre><code>{escape(proc.stderr or proc.stdout)[:3500]}</code></pre>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        out = proc.stdout[-3000:]
+        await _reply(update, context, f"✅ Collect done.\n<pre><code>{escape(out)}</code></pre>", parse_mode=ParseMode.HTML)
+
+        # Accumulate PRE-EXEC snapshot into off-chain counters (same rule as rebalance)
+        try:
+            _add_collected_fees_to_state(
+                pre_exec_fees0_raw=pre_fees0_raw,
+                pre_exec_fees1_raw=pre_fees1_raw,
+                usdc_per_eth=usdc_per_eth,
+                dec0=dec0,
+                dec1=dec1,
+                alias=alias
+            )
+        except Exception as e:
+            log_warn(f"failed to persist fees_collected_cum after collect: {e}")
+
+        # Append to history (exec_history is already updated by exec.py; we keep a small shadow here if desired)
+        try:
+            st = _load_bot_state_for(alias)
+            col = st.get("collect_history", [])
+            # try extract tx hash from stdout
+            txh = None
+            m = re.search(r"transactionHash\s+(0x[0-9a-fA-F]{64})", proc.stdout or "")
+            if m:
+                txh = m.group(1)
+
+            col.append({
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "fees0_raw": pre_fees0_raw,
+                "fees1_raw": pre_fees1_raw,
+                "fees_usd_est": pre_fees_usd,
+                "tx": txh,
+                "stdout_tail": out,
+            })
+            st["collect_history"] = col[-200:]
+            _save_bot_state_for(alias, st)
+        except Exception as _e:
+            log_warn(f"failed to append collect history for @{alias}: {_e}")
+
+    except Exception as e:
+        await _reply(update, context, f"⚠️ /collect error: {e}")
         
+  
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Default handler for unrecognized messages.
@@ -1219,6 +1324,7 @@ def main():
     app.add_handler(CommandHandler("vault_select", vault_select_cmd))
     app.add_handler(CommandHandler("vault_setpool", vault_set_pool_cmd))
     app.add_handler(CommandHandler("deposit", deposit_cmd))
+    app.add_handler(CommandHandler("collect", collect_cmd))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log_info("Telegram runner up. Listening for commands...")
