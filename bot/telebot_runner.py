@@ -834,15 +834,20 @@ async def history_cmd(update, context):
         
         
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Shows live prices, fees, USD panel, and position state.
+    If there is no active position, prints a clear hint to use /open.
+    """
     if not _allowed_chat(update):
         return
     try:
         args = context.args or []
         alias = _resolve_alias_from_args(args)
         CTX = MVCTX.get_or_create(alias)
-        
+
         obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
         snap = CTX.observer.usd_snapshot()
+        vstate = CTX.ch.vault_state()
 
         prices_html = fmt_prices_block(obs)
         state_html = fmt_state_block(obs, snap.spot_price, CTX.s.twap_window)
@@ -850,15 +855,19 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         st = _load_bot_state_for(alias)
         fees_usd_cum = float(st.get("fees_cum_usd", 0.0) or 0.0)
-        
         extras = f"\n<b>Collected fees (cum)</b>: ≈ ${fees_usd_cum:,.2f}"
+
+        hint = ""
+        if int(vstate.get("tokenId", 0) or 0) == 0:
+            hint = "\n\n<i>No active position.</i> Use <code>/open &lt;lower&gt; &lt;upper&gt; [exec]</code> to mint the initial range."
+
         text = (
             f"<b>Vault:</b> <code>{escape(CTX.ch.vault.address)}</code>\n"
-            f"{prices_html}\n\n{state_html}\n\n{usd_html}{extras}"
+            f"{prices_html}\n\n{state_html}\n\n{usd_html}{extras}{hint}"
         )
         await _reply(update, context, text, parse_mode=ParseMode.HTML)
     except Exception as e:
-        await _reply(update, context,f"⚠️ /status error: {e}")
+        await _reply(update, context, f"⚠️ /status error: {e}")
 
 
 def _fmt_breakeven_details_html(s: dict) -> str:
@@ -1040,6 +1049,16 @@ async def baseline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         alias = _resolve_alias_from_args(args)
         CTX = MVCTX.get_or_create(alias)
 
+        # If no active position, /rebalance is not allowed on this contract (it reverts).
+        # Guide the user to /open instead.
+        if not CTX.ch.has_position():
+            await _reply(
+                update,
+                context,
+                "⚠️ No active position. Use /open <lower> <upper> [exec] to mint the initial range."
+            )
+            return
+            
         sub = args[0].lower() if args else "show"
 
         if sub == "set":

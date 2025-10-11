@@ -92,12 +92,58 @@ class Chain:
         return {"token0": t0, "token1": t1, "fee": fee, "spacing": spacing, "sym0": sym0, "sym1": sym1, "dec0": dec0, "dec1": dec1}
 
     def vault_state(self) -> Dict[str, Any]:
+        """
+        Safe vault state read.
+        - Does NOT call currentRange() when there is no active position (tokenId==0), avoiding a revert.
+        - When no position: lower==upper==spotTick, liq=0.
+        """
         pool_addr = self.vault.functions.pool().call()
-        token_id = self.vault.functions.positionTokenId().call()
-        last_reb = self.vault.functions.lastRebalance().call()
-        twap_ok = self.vault.functions.twapOk().call()
-        lower, upper, liq = self.vault.functions.currentRange().call()
-        return {"pool": pool_addr, "tokenId": token_id, "lower": lower, "upper": upper, "liq": int(liq), "twapOk": bool(twap_ok), "lastRebalance": int(last_reb)}
+        token_id = int(self.vault.functions.positionTokenId().call())
+        last_reb = int(self.vault.functions.lastRebalance().call())
+        twap_ok = bool(self.vault.functions.twapOk().call())
+
+        # Default placeholders when no position is active
+        lower = upper = 0
+        liq = 0
+
+        if token_id != 0:
+            try:
+                lower, upper, liq = self.vault.functions.currentRange().call()
+                liq = int(liq)
+            except Exception:
+                # Defensive fallback: if currentRange() reverts for any reason,
+                # we still return a usable structure.
+                sqrtP, spot_tick = self.slot0()
+                lower = upper = int(spot_tick)
+                liq = 0
+        else:
+            # No position open yet: use spot tick as both bounds (width=0) and liq=0.
+            _, spot_tick = self.slot0()
+            lower = upper = int(spot_tick)
+            liq = 0
+
+        return {
+            "pool": pool_addr,
+            "tokenId": token_id,
+            "lower": int(lower),
+            "upper": int(upper),
+            "liq": int(liq),
+            "twapOk": bool(twap_ok),
+            "lastRebalance": int(last_reb),
+        }
+    
+    def has_position(self) -> bool:
+        """Returns True if the vault currently holds a Uniswap V3 position."""
+        try:
+            return int(self.vault.functions.positionTokenId().call()) != 0
+        except Exception:
+            return False
+
+    def spot_tick(self) -> int:
+        """Returns the current pool spot tick (convenience helper)."""
+        _, t = self.slot0()
+        return int(t)
+
 
     def positions(self, token_id: int):
         return self.nfpm.functions.positions(token_id).call()
