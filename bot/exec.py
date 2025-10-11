@@ -22,13 +22,14 @@ import argparse
 import shutil
 import subprocess
 import re, json
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
+from decimal import Decimal
 from dotenv import load_dotenv
 from bot.utils.log import log_info, log_warn
 from bot.config import get_settings
 from bot.vault_registry import get as vault_get
 from bot.state_utils import load as _state_load, save as _state_save
+from bot.chain import Chain
 
 load_dotenv()
 
@@ -67,20 +68,54 @@ def normalize_pk(raw: str | None) -> str:
 
     return "0x" + body.lower()
 
+def _resolve_vault_and_ctx(vault_arg: str | None) -> tuple[str, dict]:
+    """
+    Resolve vault address + registry row from either @alias or 0x-address.
+    Returns (vault_addr, vault_row_or_empty_dict). When 0x-address, row may be {}.
+    """
+    if not vault_arg:
+        raise RuntimeError("missing --vault (alias like @ethusdc or 0x-address)")
+
+    if vault_arg.startswith("@"):
+        alias = vault_arg[1:]
+    else:
+        alias = vault_arg if not vault_arg.startswith("0x") else None
+
+    if vault_arg.startswith("0x"):
+        return vault_arg, {}
+
+    v = vault_get(alias)
+    if not v:
+        raise RuntimeError("unknown vault alias in --vault")
+    return v["address"], v
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Manual vault rebalance executor.")
-    parser.add_argument("--lower", type=int, required=True, help="Lower tick (multiple of tickSpacing)")
-    parser.add_argument("--upper", type=int, required=True, help="Upper tick (multiple of tickSpacing)")
+        # rebalance
+    parser.add_argument("--lower", type=int, help="Lower tick (multiple of tickSpacing)")
+    parser.add_argument("--upper", type=int, help="Upper tick (multiple of tickSpacing)")
+    # modes
     parser.add_argument("--execute", action="store_true", help="Actually run forge script (otherwise dry-run)")
     parser.add_argument("--vault-exit", action="store_true", help="Exit position to vault (decrease+collect+burn).")
     parser.add_argument("--vault-exit-withdraw", action="store_true", help="Exit position and withdraw all to owner.")
-    parser.add_argument("--vault", type=str, help="Vault alias or 0x-address (overrides settings)")
+    parser.add_argument("--deposit", action="store_true", help="Deposit ERC20 into the vault (simple transfer).")
+    # deposit args
+    parser.add_argument("--token", type=str, help="ERC20 token address to deposit")
+    parser.add_argument("--amount", type=str, help="Human amount (e.g., 1000.5)")
+    # target vault
+    parser.add_argument("--vault", type=str, help="Vault alias prefixed with @ or 0x-address")
+
     
     args = parser.parse_args()
 
     mode_exit = bool(args.vault_exit)
     mode_exit_withdraw = bool(args.vault_exit_withdraw)
+    mode_deposit = bool(args.deposit)
+    mode_rebalance = not (mode_exit or mode_exit_withdraw or mode_deposit)
 
     if mode_exit and mode_exit_withdraw:
         raise RuntimeError("Use only one of --vault-exit OR --vault-exit-withdraw (not both).")
@@ -93,34 +128,62 @@ def main():
     else:
         # modos de exit: não exigem lower/upper
         action_label = "Exit position to vault" if mode_exit else "Exit + WithdrawAll to owner"
+    
+    # Validate mode-specific required args
+    if mode_rebalance:
+        if args.lower is None or args.upper is None:
+            raise RuntimeError("Rebalance mode requires --lower and --upper.")
+        action_label = f"Rebalance lower={args.lower}, upper={args.upper}"
+    elif mode_exit:
+        action_label = "Exit position to vault"
+    elif mode_exit_withdraw:
+        action_label = "Exit + WithdrawAll to owner"
+    else:  # deposit
+        if not args.token or not args.amount:
+            raise RuntimeError("Deposit mode requires --token and --amount.")
+        action_label = f"Deposit token={args.token} amount={args.amount}"
         
     s = get_settings()
-    alias_for_state = None
-    if args.vault:
-        if args.vault.startswith("0x"):
-            vault_addr = args.vault
-        else:
-            alias_for_state = args.vault
-            v = vault_get(args.vault)
-            if not v:
-                raise RuntimeError("unknown vault alias in --vault")
-            vault_addr = v["address"]
+    vault_addr, v = _resolve_vault_and_ctx(args.vault)
+    rpc  = v.get("rpc_url")
+    nfpm = v.get("nfpm")
+    pool = v.get("pool")
+    
+    alias_for_state = (args.vault[1:] if args.vault and args.vault.startswith("@") else "default")
 
     log_info(f"Preparing {'EXECUTION' if args.execute else 'DRY-RUN'} for vault={vault_addr}")
     log_info(action_label)
 
-    # export the envs that your Forge script reads via vm.env*
+    # export the envs that Forge script reads via vm.env*
     env = os.environ.copy()
     env["VAULT_ADDRESS"] = vault_addr
     env["RPC_SEPOLIA"]   = s.rpc_url
-    if not (mode_exit or mode_exit_withdraw):
+
+    # For deposit: validate token is token0 or token1 of vault's pool
+    if mode_deposit:
+        if not pool:
+            raise RuntimeError("Vault has no pool set. Use /vault_setpool first.")
+        # Build a tiny Chain just to read pool + token decimals
+        ch = Chain(s.rpc_url, pool, nfpm, vault_addr)
+        t0 = ch.pool.functions.token0().call()
+        t1 = ch.pool.functions.token1().call()
+        tok = args.token
+        if tok.lower() not in (t0.lower(), t1.lower()):
+            raise RuntimeError("Token is not part of the vault pool (must be token0 or token1).")
+        dec = ch.erc20(tok).functions.decimals().call()
+        # amountRaw = amount * 10^dec
+        amt_raw = int(Decimal(args.amount) * (Decimal(10) ** dec))
+        env["TOKEN_ADDRESS"] = tok
+        env["AMOUNT_RAW"] = str(amt_raw)
+
+    if mode_rebalance:
         env["LOWER_TICK"] = str(args.lower)
         env["UPPER_TICK"] = str(args.upper)
-        
+
     if not args.execute:
         log_warn("Dry-run only — no transaction sent.")
         return
-
+    
     # normalize private key (and fail early if bad)
     pk = normalize_pk(s.private_key)
 
@@ -131,13 +194,12 @@ def main():
         raise RuntimeError(f"contracts/ directory not found at {contracts_dir}")
 
     if mode_exit:
-        # override opcional via FORGE_SCRIPT_EXIT_FILE
         script_target = env.get("FORGE_SCRIPT_EXIT_FILE", "script/VaultExit.s.sol:VaultExit")
     elif mode_exit_withdraw:
-        # override opcional via FORGE_SCRIPT_EXIT_WITHDRAW_FILE
         script_target = env.get("FORGE_SCRIPT_EXIT_WITHDRAW_FILE", "script/VaultExitWithdraw.s.sol:VaultExitWithdraw")
+    elif mode_deposit:
+        script_target = env.get("FORGE_SCRIPT_DEPOSIT_FILE", "script/VaultDeposit.s.sol:VaultDeposit")
     else:
-        # override opcional via FORGE_SCRIPT_FILE
         script_target = env.get("FORGE_SCRIPT_FILE", "script/RebalanceManual.s.sol:RebalanceManual")
 
     log_info("Running forge script...")
@@ -173,15 +235,25 @@ def main():
         state = _state_load(alias_for_state or "default")
         hist = state.get("exec_history", [])
         hist.append({
-            "ts": datetime.now(datetime.UTC).isoformat(),
-            "lower": args.lower if args.lower is not None else None,
-            "upper": args.upper if args.upper is not None else None,
-            "mode": ("exit_withdraw" if mode_exit_withdraw else ("exit" if mode_exit else "rebalance")),
+            "ts": _now_iso(),
+            "lower": args.lower if mode_rebalance else None,
+            "upper": args.upper if mode_rebalance else None,
+            "mode": ("deposit" if mode_deposit else ("exit_withdraw" if mode_exit_withdraw else ("exit" if mode_exit else "rebalance"))),
             "tx": txh,
             "stdout_tail": proc.stdout[-3000:],
         })
         state["exec_history"] = hist[-50:]
-        _state_save(alias_for_state or "default", state)
+        if mode_deposit:
+            deps = state.get("deposits", [])
+            deps.append({
+                "ts": _now_iso(),
+                "token": args.token,
+                "amount_human": args.amount,
+                "tx": txh,
+            })
+            state["deposits"] = deps[-200:]
+
+        _state_save(alias_for_state, state)
 
         log_info("Forge script OK.")
     except FileNotFoundError:

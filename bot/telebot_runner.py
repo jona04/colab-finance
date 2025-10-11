@@ -396,6 +396,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• /baseline <set|show> [@alias]\n"
             "• /propose [@alias]\n"
             "• /rebalance <lower> <upper> [exec] [@alias]\n"
+            "• /deposit <token> <amount> [exec] [@alias]\n"
             "• /withdraw <pool|all> [exec] [@alias]\n"
             "• /reload\n"
             "\n"
@@ -1058,6 +1059,96 @@ async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, context, f"⚠️ /withdraw error: {e}")
         
 
+async def deposit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /deposit <token> <amount> [exec] [@alias]
+
+    Validates:
+      - alias resolve
+      - vault has pool set
+      - token belongs to pool (token0 or token1)
+    Dry-run prints metadata; exec runs python -m bot.exec --deposit --token ... --amount ... --vault @alias
+
+    Notes:
+      - Amount is human (e.g., 1000.5). On-chain raw units are computed in exec.py using token decimals.
+      - If pool token1 is WETH, deposit WETH (not ETH). Wrapping ETH can be added later if desired.
+    """
+    if not _allowed_chat(update):
+        return
+    try:
+        args = context.args or []
+        if len(args) < 2:
+            await _reply(update, context, "Usage: /deposit <token_addr> <amount> [exec] [@alias]")
+            return
+
+        token = args[0]
+        amount = args[1]
+        do_exec = False
+
+        # capture optional flags and alias
+        rest = args[2:]
+        alias = _resolve_alias_from_args(rest) if rest else _resolve_alias_from_args([])
+        if rest and len(rest) > 0 and rest[0].lower() in ("exec", "execute", "run"):
+            do_exec = True
+
+        CTX = MVCTX.get_or_create(alias)
+        ch = CTX.ch
+
+        # validate pool set
+        pool_addr = CTX.s  # só pra deixar explícito no escopo
+        vrow = vault_get(alias) or {}
+        pool = vrow.get("pool")
+        if not pool:
+            await _reply(update, context, f"⚠️ Vault @{alias} has no pool set. Use /vault_setpool <alias> <pool>")
+            return
+
+        # validate token is part of pool
+        t0 = ch.pool.functions.token0().call()
+        t1 = ch.pool.functions.token1().call()
+        if token.lower() not in (t0.lower(), t1.lower()):
+            await _reply(update, context, "⚠️ Token is not part of the pool (must be token0 or token1).")
+            return
+
+        # read token metadata for UX
+        c = ch.erc20(token)
+        sym = c.functions.symbol().call()
+        dec = int(c.functions.decimals().call())
+
+        if not do_exec:
+            await _reply(
+                update,
+                context,
+                (
+                    "🧪 Dry-run deposit\n"
+                    f"• alias=@{alias}\n"
+                    f"• token={token} ({sym}, {dec} dec)\n"
+                    f"• amount={amount}\n\n"
+                    "To execute: /deposit <token> <amount> exec [@alias]"
+                )
+            )
+            return
+
+        # Execute via existing wrapper (python -m bot.exec)
+        cmd = f"python -m bot.exec --deposit --token {token} --amount {amount} --execute --vault @{alias}"
+        await _reply(update, context, f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
+
+        proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True, env=os.environ)
+        if proc.returncode != 0:
+            await _reply(
+                update,
+                context,
+                f"❌ Execution failed:\n<pre><code>{escape(proc.stderr or proc.stdout)[:3500]}</code></pre>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        out = proc.stdout[-3000:]
+        await _reply(update, context, f"✅ Deposit complete.\n<pre><code>{escape(out)}</code></pre>", parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        await _reply(update, context, f"⚠️ /deposit error: {e}")
+        
+        
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Default handler for unrecognized messages.
@@ -1076,6 +1167,7 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• /baseline <set|show> [@alias]\n"
             "• /propose [@alias]\n"
             "• /rebalance <lower> <upper> [exec] [@alias]\n"
+            "• /deposit <token> <amount> [exec] [@alias]\n"
             "• /withdraw <pool|all> [exec] [@alias]\n"
             "• /reload\n"
             "\n"
@@ -1126,6 +1218,7 @@ def main():
     app.add_handler(CommandHandler("vault_add", vault_add_cmd))
     app.add_handler(CommandHandler("vault_select", vault_select_cmd))
     app.add_handler(CommandHandler("vault_setpool", vault_set_pool_cmd))
+    app.add_handler(CommandHandler("deposit", deposit_cmd))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log_info("Telegram runner up. Listening for commands...")
