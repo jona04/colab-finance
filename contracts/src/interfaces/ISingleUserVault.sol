@@ -43,4 +43,7 @@ interface ISingleUserVault is VaultEvents {
     function exitAndWithdrawAll() external;
 
     function collectFees() external returns (uint256 fees0, uint256 fees1);
+
+    /// @notice Performs a rebalance using explicit caps (no swaps), consuming up to maxUse0/maxUse1.
+    function rebalanceWithCaps(int24 lower, int24 upper, uint256 maxUse0, uint256 maxUse1) external;
 }

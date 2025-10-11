@@ -440,4 +440,94 @@ contract SingleUserVault is ISingleUserVault, ReentrancyGuard {
 
         emit Collected(fees0, fees1);
     }
+
+    /// @notice Rebalance using explicit caps (max amounts) for token0 and token1 (no swaps).
+    /// @dev Same flow as rebalance(): collect fees -> decrease all -> collect -> burn -> mint.
+    ///      The mint step uses min(balance, cap) for each token as amountXDesired.
+    ///      This allows "no-swap / ratio-capped" rebalances when inventory is imbalanced.
+    function rebalanceWithCaps(int24 lower, int24 upper, uint256 maxUse0, uint256 maxUse1)
+        external
+        onlyOwner
+        poolSet
+        nonReentrant
+    {
+        if (positionTokenId == 0) revert VaultErrors.PositionNotInitialized();
+        _ensureCooldown();
+        _validateWidth(lower, upper);
+        _validateTickSpacing(lower, upper);
+        _ensureTwapOk();
+
+        // 1) Collect pending fees prior to decrease
+        (uint256 fees0, uint256 fees1) = NFPM(nfpm).collect(
+            NFPM.CollectParams({
+                tokenId: positionTokenId,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            })
+        );
+
+        // 2) Decrease all liquidity (if any)
+        (, , , , , , , uint128 liq, , , , ) = NFPM(nfpm).positions(positionTokenId);
+        if (liq > 0) {
+            NFPM(nfpm).decreaseLiquidity(
+                NFPM.DecreaseLiquidityParams({
+                    tokenId: positionTokenId,
+                    liquidity: liq,
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    deadline: block.timestamp + 900
+                })
+            );
+            // 3) Collect tokens owed from decrease
+            (uint256 add0, uint256 add1) = NFPM(nfpm).collect(
+                NFPM.CollectParams({
+                    tokenId: positionTokenId,
+                    recipient: address(this),
+                    amount0Max: type(uint128).max,
+                    amount1Max: type(uint128).max
+                })
+            );
+            fees0 += add0;
+            fees1 += add1;
+        }
+
+        // 4) Burn old NFT and clear
+        uint256 oldId = positionTokenId;
+        NFPM(nfpm).burn(positionTokenId);
+        positionTokenId = 0;
+
+        (address token0, address token1, uint24 fee) = _poolTokens();
+
+        // Determine desired amounts: limited by caps and current balances
+        uint bal0 = IERC20(token0).balanceOf(address(this));
+        uint bal1 = IERC20(token1).balanceOf(address(this));
+        uint amount0Desired = maxUse0 < bal0 ? maxUse0 : bal0;
+        uint amount1Desired = maxUse1 < bal1 ? maxUse1 : bal1;
+
+        // Approvals (idempotent / max approval pattern)
+        _approveIfNeeded(token0, nfpm, amount0Desired);
+        _approveIfNeeded(token1, nfpm, amount1Desired);
+
+        NFPM.MintParams memory mp = NFPM.MintParams({
+            token0: token0,
+            token1: token1,
+            fee: fee,
+            tickLower: lower,
+            tickUpper: upper,
+            amount0Desired: amount0Desired,
+            amount1Desired: amount1Desired,
+            amount0Min: 0,
+            amount1Min: 0,
+            recipient: address(this),
+            deadline: block.timestamp + 900
+        });
+
+        (uint newTokenId,,,) = NFPM(nfpm).mint(mp);
+        positionTokenId = newTokenId;
+        lastRebalance = block.timestamp;
+
+        // Reuse existing event (fees0/fees1 are the total collected along the flow)
+        emit Rebalanced(newTokenId, lower, upper, fees0, fees1);
+    }
 }

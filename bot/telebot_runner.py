@@ -67,6 +67,38 @@ getcontext().prec = 60  # precisão boa para os cálculos de sqrt/amounts
 READ_ONLY = os.environ.get("READ_ONLY", "0").strip() in ("1", "true", "yes")
 REQUIRE_CHAT_ONLY = os.environ.get("REQUIRE_CHAT_ONLY", "0").strip() in ("1", "true", "yes")  # exige TELEGRAM_CHAT_ID
 BLOCK_DMS = os.environ.get("BLOCK_DMS", "0").strip() in ("1", "true", "yes") 
+HELP_TEXT = (
+    "👋 Uni Range Bot online.\n"
+    "Comandos:\n"
+    "• /status [@alias]\n"
+    "• /balances [@alias]\n"
+    "• /history [@alias]\n"
+    "• /baseline <set|show> [@alias]\n"
+    "• /propose [@alias]\n"
+    "• /simulate_range <tick|eth/usdc|usdc/eth> <bounds|increase_width=…|decrease_width=…> [@alias]\n"
+    "• /rebalance <tick|eth/usdc|usdc/eth> <bounds|increase/decrease_width=…> [exec] [@alias]\n"
+    "• /collect [exec] [@alias]\n"
+    "• /deposit <token> <amount> [exec] [@alias]\n"
+    "• /withdraw <pool|all> [exec] [@alias]\n"
+    "• /reload\n"
+    "\n"
+    "Gestão de vaults:\n"
+    "• /vault_create <alias> <nfpm> <pool> [rpc]   (deploy + registrar + tornar ativo)\n"
+    "• /vault_add <alias> <vault> [pool] [nfpm] [rpc]\n"
+    "• /vault_select <alias>\n"
+    "• /vault_list\n"
+    "• /vault_setpool <alias> <pool>\n"
+    "\n"
+    "Dica: acrescente @alias no fim do comando p/ agir em um vault específico.\n"
+    "Ex.: /status @ethusdc | /rebalance usdc/eth 2500 3500 exec @ethusdc"
+)
+
+async def _send_help(update, context):
+    """
+    Small helper to send the unified help text.
+    Keeps help consistent across /start and fallback.
+    """
+    await _reply(update, context, HELP_TEXT)
 
 @contextmanager
 def _env_override(mapping: dict[str, str | None]):
@@ -537,7 +569,7 @@ class MultiVaultCtx:
         pool = v.get("pool")
         addr = v["address"]
 
-        ctx = AppCtx(rpc, pool, nfpm, addr)
+        ctx = AppCtx(alias, rpc, pool, nfpm, addr)
         self._by_alias[alias] = ctx
         return ctx
 
@@ -596,35 +628,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not _allowed_chat(update):
         return
-    await _reply(
-        update,
-        context,
-        (
-            "👋 Uni Range Bot online.\n"
-            "Comandos:\n"
-            "• /status [@alias]\n"
-            "• /balances [@alias]\n"
-            "• /history [@alias]\n"
-            "• /baseline <set|show> [@alias]\n"
-            "• /propose [@alias]\n"
-            "• /simulate_range <tick|eth/usdc|usdc/eth> <bounds|increase_width=…|decrease_width=…> [@alias]\n"
-            "• /rebalance <lower> <upper> [exec] [@alias]\n"
-            "• /collect [exec] [@alias]\n"
-            "• /deposit <token> <amount> [exec] [@alias]\n"
-            "• /withdraw <pool|all> [exec] [@alias]\n"
-            "• /reload\n"
-            "\n"
-            "Gestão de vaults:\n"
-            "• /vault_create <alias> <nfpm> <pool> [rpc]   (deploy + registrar + tornar ativo)\n"
-            "• /vault_add <alias> <vault> [pool] [nfpm] [rpc]\n"
-            "• /vault_select <alias>\n"
-            "• /vault_list\n"
-            "• /vault_setpool <alias> <pool>\n"
-            "\n"
-            "Dica: acrescente @alias no fim do comando p/ agir em um vault específico.\n"
-            "Ex.: /status @ethusdc | /rebalance 181800 182200 exec @ethusdc"
-        )
-    )
+    await _send_help(update, context)
 
 
 async def vault_list_cmd(update, context):
@@ -1074,125 +1078,281 @@ async def baseline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
 async def rebalance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /rebalance <lower> <upper> [exec]
+    /rebalance <...variants...> [exec] [@alias]
 
-    Flow:
-      1) Parse args and validate (tickSpacing, bounds).
-      2) Check cooldown and twapOk using vault state.
-      3) If no "exec", do a dry-run and print the suggestion.
-      4) If "exec", shell out to: python -m bot.exec --lower L --upper U --execute
-         and return the stdout tail to the chat. Also append a short entry in bot/state.json.
+    Accepted forms (same as /simulate_range):
+      • /rebalance tick <lowerTick> <upperTick> [exec] [@alias]
+      • /rebalance eth/usdc <lower> <upper> [exec] [@alias]
+      • /rebalance usdc/eth <lower> <upper> [exec] [@alias]
+      • /rebalance usdc/eth increase_width=10% [exec] [@alias]
+      • /rebalance usdc/eth decrease_width=10% [exec] [@alias]
+      • Back-compat: /rebalance <lowerTick> <upperTick> [exec] [@alias]
 
-    Notes:
-      - Requires PRIVATE_KEY et al. in environment when executing.
-      - This runner does not broadcast transactions directly; it delegates to your existing wrapper.
+    Behavior:
+      - Converts to ticks (aligned to spacing).
+      - Validates minWidth/maxWidth at the vault and tickSpacing.
+      - Computes per-unit-L mint proportions at current price.
+      - Computes caps (no swaps) using ALL inventory (idle + current pool), because
+        rebalanceWithCaps internally exits the old position first.
+      - Dry-run shows everything; Exec calls python -m bot.exec --rebalance-caps ...
     """
     if not _allowed_chat(update):
         return
-        
     try:
         args = context.args or []
-        alias = _resolve_alias_from_args(args)
+        if not args:
+            await _reply(update, context,
+                "Usage examples:\n"
+                "• /rebalance tick 181800 182200 [exec] [@alias]\n"
+                "• /rebalance eth/usdc 0.008 0.012 [exec] [@alias]\n"
+                "• /rebalance usdc/eth 2500 3500 [exec] [@alias]\n"
+                "• /rebalance usdc/eth increase_width=10% [exec] [@alias]\n"
+                "• /rebalance usdc/eth decrease_width=10% [exec] [@alias]"
+            )
+            return
+
+        # Detect trailing @alias and do_exec flag
+        do_exec = False
+        # we want to allow either "... exec @alias" or "... @alias exec"
+        rest = args[:]
+        alias = _resolve_alias_from_args(rest)
+        # search for exec flag
+        for i, tok in enumerate(rest):
+            if tok.lower() in ("exec", "execute", "run"):
+                do_exec = True
+                rest.pop(i)
+                break
+
+        # If user gave only two raw ints -> legacy ticks
+        mode = None
+        params = []
+        if len(rest) >= 2 and re.fullmatch(r"-?\d+", rest[0]) and re.fullmatch(r"-?\d+", rest[1]):
+            mode = "tick"
+            params = [rest[0], rest[1]]
+        else:
+            mode = (rest[0].lower() if rest else "tick")
+            params = rest[1:] if len(rest) > 1 else []
+
+        # Resolve ctx
         CTX = MVCTX.get_or_create(alias)
-        
-        if CTX.s.read_only_mode:
-            args = context.args or []
-            if len(args) >= 3 and args[2].lower() in ("exec", "execute", "run"):
-                await _reply(update, context,
-                    "🔒 Read-only mode is enabled. Execution commands are disabled. "
-                    "Unset READ_ONLY_MODE to allow transactions."
-                )
-                return
-        
-        if len(args) < 2:
-            await _reply(update, context,"Usage: /rebalance <lower> <upper> [exec]")
-            return
-        lower = int(args[0])
-        upper = int(args[1])
-        do_exec = (len(args) >= 3 and args[2].lower() in ("exec", "execute", "run"))
+        ch = CTX.ch
+        s  = CTX.s
 
-        # Validations
-        vstate = CTX.ch.vault_state()
-        spacing = CTX.ch.pool.functions.tickSpacing().call()
-        _validate_ticks(lower, upper, spacing)
-
-        # Cooldown (allow if never rebalanced: lastRebalance=0)
-        last = int(vstate["lastRebalance"])
-        now = int(datetime.utcnow().timestamp())
-        since = now - last if last > 0 else 10**9
-        if since < CTX.s.min_cooldown:
-            await _reply(update, context,
-                f"⏱️ Cooldown not passed. ~{CTX.s.min_cooldown - since}s remaining."
-            )
+        # --- Vault must have pool set
+        vrow = vault_get(alias) or {}
+        if not vrow.get("pool"):
+            await _reply(update, context, "⚠️ Vault has no pool set. Use /vault_setpool <alias> <pool>")
             return
 
-        # TWAP guard (use vault.twapOk())
-        if not vstate["twapOk"]:
-            await update.message.reply_text("📉 TWAP guard failed (twapOk=false).")
-            return
-
-        if not do_exec:
-            await _reply(update, context,
-                f"🧪 Dry-run OK.\nSuggested: lower={lower}, upper={upper}\n"
-                "To execute: /rebalance <lower> <upper> exec"
-            )
-            return
-
-        # ---- PRE-EXEC SNAPSHOT (para acumular fees após exec) ----
-        pre_obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
-        pre_fees0 = int(pre_obs["uncollected_fees_token0"])
-        pre_fees1 = int(pre_obs["uncollected_fees_token1"])
-        pre_usdc_per_eth = float(CTX.observer.usd_snapshot().spot_price)
-        meta = CTX.ch.pool_meta() 
+        meta = ch.pool_meta()
+        spacing = int(meta["spacing"])
         dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
-            
-        # Execution via wrapper (python -m bot.exec)
-        cmd = f"python -m bot.exec --lower {lower} --upper {upper} --execute --vault {alias}"
-        await _reply(update, context,f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
+        sym0, sym1 = meta["sym0"], meta["sym1"]
+        usdc_idx, eth_idx = _detect_indices_usdc_eth(sym0, sym1)
 
-        proc = subprocess.run(
-            shlex.split(cmd),
-            capture_output=True,
-            text=True,
-            env=os.environ
+        # Live context (idle/pool/current)
+        idle0, idle1, pool0, pool1, cur_lower, cur_upper, cur_tick = _read_idle_and_pool_amounts(ch, dec0, dec1)
+        eth_per_usdc_cur, usdc_per_eth_cur = _usdc_eth_views_from_tick(cur_tick, dec0, dec1, usdc_idx, eth_idx)
+
+        # --- Parse lower/upper from variants (reuse simulate helpers)
+        def _align_pair(l: int, u: int) -> tuple[int, int]:
+            _l = _align_tick(int(l), spacing, "down")
+            _u = _align_tick(int(u), spacing, "up")
+            if _u <= _l:
+                _u = _l + spacing
+            return _l, _u
+
+        if mode in ("tick", "ticks"):
+            if len(params) < 2:
+                await _reply(update, context, "Usage: /rebalance tick <lower> <upper> [exec] [@alias]")
+                return
+            lower, upper = _align_pair(int(params[0]), int(params[1]))
+        elif mode in ("eth/usdc", "ethusdc", "eth_usdc"):
+            if len(params) >= 2 and ("width=" not in params[0].lower()):
+                pL, pU = float(params[0]), float(params[1])
+                tl = _tick_from_eth_per_usdc_target(pL, dec0, dec1, usdc_idx, eth_idx)
+                tu = _tick_from_eth_per_usdc_target(pU, dec0, dec1, usdc_idx, eth_idx)
+                lower, upper = _align_pair(min(tl, tu), max(tl, tu))
+            else:
+                if len(params) < 1:
+                    await _reply(update, context, "Usage: /rebalance eth/usdc increase_width=10% [exec] [@alias]")
+                    return
+                if cur_lower == 0 and cur_upper == 0:
+                    await _reply(update, context, "Não há posição para reusar o centro. Informe um range com ticks ou preços.")
+                    return
+                flag = params[0]
+                pct = _parse_percent_flag(flag)
+                inc = flag.lower().startswith("increase_width")
+                lower, upper = _resize_width_around_center(cur_lower, cur_upper, spacing, pct, increase=inc)
+        elif mode in ("usdc/eth", "usdceth", "usdc_eth"):
+            if len(params) >= 2 and ("width=" not in params[0].lower()):
+                pL, pU = float(params[0]), float(params[1])
+                tl = _tick_from_usdc_per_eth_target(pL, dec0, dec1, usdc_idx, eth_idx)
+                tu = _tick_from_usdc_per_eth_target(pU, dec0, dec1, usdc_idx, eth_idx)
+                lower, upper = _align_pair(min(tl, tu), max(tl, tu))
+            else:
+                if len(params) < 1:
+                    await _reply(update, context, "Usage: /rebalance usdc/eth increase_width=10% [exec] [@alias]")
+                    return
+                if cur_lower == 0 and cur_upper == 0:
+                    await _reply(update, context, "Não há posição para reusar o centro. Informe um range com ticks ou preços.")
+                    return
+                flag = params[0]
+                pct = _parse_percent_flag(flag)
+                inc = flag.lower().startswith("increase_width")
+                lower, upper = _resize_width_around_center(cur_lower, cur_upper, spacing, pct, increase=inc)
+        else:
+            await _reply(update, context, "First argument must be one of: tick | eth/usdc | usdc/eth")
+            return
+
+        # --- Show how we aligned + spacing
+        aligned_msg = (
+            f"tickSpacing=<code>{spacing}</code> → aligned ticks: "
+            f"<code>{lower}</code> → <code>{upper}</code>"
         )
 
+        # --- Validate minWidth/maxWidth against the vault settings
+        # public vars in the vault:
+        try:
+            mw_min = int(ch.vault.functions.minWidth().call())
+            mw_max = int(ch.vault.functions.maxWidth().call())
+        except Exception:
+            # fallback if not accessible (should be public in your contract)
+            mw_min, mw_max = (60, 200_000)
+
+        width = upper - lower
+        if width < mw_min or width > mw_max:
+            await _reply(
+                update, context,
+                (f"⚠️ width={width} ticks is outside vault limits "
+                 f"(minWidth={mw_min}, maxWidth={mw_max}).\n{aligned_msg}"),
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        # --- Cooldown and TWAP guards (using your existing interfaces)
+        vstate = ch.vault_state()
+        last = int(vstate.get("lastRebalance", 0) or 0)
+        now_ts = int(datetime.utcnow().timestamp())
+        since = now_ts - last if last > 0 else 10**9
+        if since < s.min_cooldown:
+            await _reply(update, context,
+                f"⏱️ Cooldown not passed. ~{s.min_cooldown - since}s remaining."
+            )
+            return
+        if not bool(vstate.get("twapOk", True)):
+            await _reply(update, context, "📉 TWAP guard failed (twapOk=false).")
+            return
+
+        # --- Per-unit-L mint needs at current price (no swap math)
+        need0_perL, need1_perL = _estimate_mint_amounts_needed(cur_tick, lower, upper, dec0, dec1)
+        n0, n1 = float(need0_perL), float(need1_perL)
+
+        # --- Compute caps over ALL inventory (exit-then-mint model)
+        i0, i1 = float(idle0), float(idle1)
+        p0, p1 = float(pool0), float(pool1)
+        tot0, tot1 = i0 + p0, i1 + p1
+
+        def _utilization(id0: float, id1: float) -> tuple[float, float, float]:
+            if n0 == 0 and n1 == 0:
+                return (0.0, 0.0, 0.0)
+            if n0 == 0:
+                L_cap = id1 / n1 if n1 > 0 else 0.0
+                return (L_cap, 0.0, min(id1, L_cap * n1))
+            if n1 == 0:
+                L_cap = id0 / n0 if n0 > 0 else 0.0
+                return (L_cap, min(id0, L_cap * n0), 0.0)
+            L_by0 = id0 / n0 if n0 > 0 else float("inf")
+            L_by1 = id1 / n1 if n1 > 0 else float("inf")
+            L_cap = min(L_by0, L_by1)
+            return (L_cap, min(id0, L_cap * n0), min(id1, L_cap * n1))
+
+        L_all, use0_all, use1_all = _utilization(tot0, tot1)
+
+        # --- Output (dry-run panel)
+        side = "inside"
+        if cur_tick < lower: side = "below"
+        elif cur_tick >= upper: side = "above"
+
+        e_low, u_low = _usdc_eth_views_from_tick(lower, dec0, dec1, usdc_idx, eth_idx)
+        e_up,  u_up  = _usdc_eth_views_from_tick(upper, dec0, dec1, usdc_idx, eth_idx)
+
+        lines = []
+        lines.append("<b>/rebalance</b> (no swaps, with caps)")
+        lines.append(f"<b>Vault:</b> <code>{escape(ch.vault.address)}</code>")
+        lines.append(f"<b>Range</b>: lower=<code>{lower}</code> → upper=<code>{upper}</code> | width=<code>{width}</code> ticks")
+        lines.append(f"{aligned_msg}")
+        lines.append(f"<b>Vault limits</b>: minWidth=<code>{mw_min}</code> | maxWidth=<code>{mw_max}</code>")
+        lines.append(f"<b>Current</b>: tick=<code>{cur_tick}</code> | side=<code>{side}</code>")
+        lines.append(f"<b>ETH/USDC</b>: lower=<code>{e_low:.10f}</code> | upper=<code>{e_up:.10f}</code>")
+        lines.append(f"<b>USDC/ETH</b>: lower=<code>{u_low:.2f}</code> | upper=<code>{u_up:.2f}</code>")
+        lines.append(f"<b>Spot</b>: ETH/USDC=<code>{eth_per_usdc_cur:.10f}</code> | USDC/ETH=<code>{usdc_per_eth_cur:.2f}</code>")
+        lines.append("")
+        lines.append("<b>Per-unit-L needs</b> (no swap): "
+                     f"{escape(sym0)}=<code>{n0:.10f}</code> | {escape(sym1)}=<code>{n1:.10f}</code>")
+        lines.append("<b>Inventory (idle+pool)</b>: "
+                     f"{escape(sym0)}=<code>{tot0:.6f}</code> | {escape(sym1)}=<code>{tot1:.6f}</code>")
+        lines.append("<b>Caps chosen</b> (max use w/o swaps): "
+                     f"{escape(sym0)}=<code>{use0_all:.6f}</code> | {escape(sym1)}=<code>{use1_all:.6f}</code>")
+
+        if not do_exec:
+            lines.append("")
+            lines.append("🧪 Dry-run OK. To execute:")
+            # We pass human caps to exec; it will convert to RAW.
+            lines.append(
+                f"<code>/rebalance tick {lower} {upper} exec @{alias}</code>\n"
+                f"(This will call exec with --rebalance-caps --cap0 {use0_all:.8f} --cap1 {use1_all:.8f})"
+            )
+            await _reply(update, context, "\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+
+        # --- EXEC path: call python -m bot.exec with caps
+        # Guard read-only mode
+        if CTX.s.read_only_mode:
+            await _reply(update, context,
+                "🔒 Read-only mode is enabled. Execution commands are disabled. "
+                "Unset READ_ONLY_MODE to allow transactions."
+            )
+            return
+
+        cmd = (
+            f"python -m bot.exec --rebalance-caps "
+            f"--lower {lower} --upper {upper} "
+            f"--cap0 {use0_all:.18f} --cap1 {use1_all:.18f} "
+            f"--execute --vault @{alias}"
+        )
+        await _reply(update, context, f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
+
+        proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True, env=os.environ)
         if proc.returncode != 0:
             await _reply(update, context,
                 f"❌ Execution failed:\n<pre><code>{escape(proc.stderr or proc.stdout)[:3500]}</code></pre>",
                 parse_mode=ParseMode.HTML
             )
-
             return
 
         out = proc.stdout[-3000:]
-        await _reply(update, context,
-            f"✅ Execution complete.\n<pre><code>{escape(out)}</code></pre>",
-            parse_mode=ParseMode.HTML
-        )
+        await _reply(update, context, f"✅ Execution complete.\n<pre><code>{escape(out)}</code></pre>", parse_mode=ParseMode.HTML)
 
-        # ---- accumulate collected fees (off-chain) ----
+        # Append a short exec trail
         try:
-            _add_collected_fees_to_state(pre_fees0, pre_fees1, pre_usdc_per_eth, dec0, dec1, alias)
-        except Exception as e:
-            log_warn(f"failed to persist fees_collected_cum: {e}")
-            
-        try:
-            st = _load_bot_state_for(alias)
-            history = st.get("exec_history", [])
-            history.append({
+            st = _state_load(alias)
+            hist = st.get("exec_history", [])
+            hist.append({
                 "ts": datetime.utcnow().isoformat() + "Z",
+                "mode": "rebalance_caps",
                 "lower": lower,
                 "upper": upper,
                 "stdout_tail": out,
             })
-            st["exec_history"] = history[-50:]
-            _save_bot_state_for(alias, st)
-        except Exception:
-            pass
+            st["exec_history"] = hist[-50:]
+            _state_save(alias, st)
+        except Exception as e:
+            log_warn(f"failed to append rebalance history: {e}")
 
     except Exception as e:
-        await _reply(update, context,f"⚠️ /rebalance error: {e}")
+        await _reply(update, context, f"⚠️ /rebalance error: {e}")
+
 
 
 async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1659,7 +1819,83 @@ async def simulate_range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     except Exception as e:
         await _reply(update, context, f"⚠️ /simulate_range error: {e}")
-        
+
+
+async def vault_create_cmd(update, context):
+    """
+    /vault_create <alias> <nfpm> <pool> [rpc]
+    Deploy a new SingleUserVault with NFPM, optionally set the pool,
+    and auto-register the new vault under <alias> (active).
+    """
+    if not _allowed_chat(update):
+        return
+    try:
+        args = context.args or []
+        if len(args) < 3:
+            await _reply(update, context, "Usage: /vault_create <alias> <nfpm> <pool> [rpc]")
+            return
+        alias, nfpm, pool = args[0], args[1], args[2]
+        rpc = args[3] if len(args) >= 4 else None
+
+        # Dry-run message
+        await _reply(
+            update, context,
+            (
+                "🧪 Dry-run /vault_create\n"
+                f"• alias=@{alias}\n"
+                f"• nfpm={nfpm}\n"
+                f"• pool={pool}\n"
+                f"• rpc={rpc or '(default)'}\n\n"
+                "To execute: /vault_create_exec <alias> <nfpm> <pool> [rpc]"
+            )
+        )
+    except Exception as e:
+        await _reply(update, context, f"⚠️ /vault_create error: {e}")
+
+async def vault_create_exec_cmd(update, context):
+    """
+    /vault_create_exec <alias> <nfpm> <pool> [rpc]
+    Executes deployment (forge script via bot.exec) and auto-registers on success.
+    """
+    if not _allowed_chat(update):
+        return
+    try:
+        args = context.args or []
+        if len(args) < 3:
+            await _reply(update, context, "Usage: /vault_create_exec <alias> <nfpm> <pool> [rpc]")
+            return
+        alias, nfpm, pool = args[0], args[1], args[2]
+        rpc = args[3] if len(args) >= 4 else None
+
+        # Build exec command
+        cmd = f"python -m bot.exec --deploy-vault --alias {alias} --nfpm {nfpm} --pool {pool} --execute"
+        if rpc:
+            cmd += f" --rpc {rpc}"
+
+        await _reply(update, context, f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
+
+        proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True, env=os.environ)
+        if proc.returncode != 0:
+            await _reply(
+                update,
+                context,
+                f"❌ Deployment failed:\n<pre><code>{escape(proc.stderr or proc.stdout)[:3500]}</code></pre>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        out = proc.stdout[-3000:]
+        # Try to extract deployed address for user feedback
+        m = re.search(r"Deployed SingleUserVault at:\s+(0x[0-9a-fA-F]{40})", proc.stdout or "")
+        deployed = m.group(1) if m else "(not found)"
+        await _reply(
+            update, context,
+            f"✅ Deployed @{alias}: <code>{escape(deployed)}</code>\n<pre><code>{escape(out)}</code></pre>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await _reply(update, context, f"⚠️ /vault_create_exec error: {e}")
+             
          
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1667,35 +1903,7 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not _allowed_chat(update):
         return
-    await _reply(
-        update,
-        context,
-        (
-            "👋 Uni Range Bot online.\n"
-            "Comandos:\n"
-            "• /status [@alias]\n"
-            "• /balances [@alias]\n"
-            "• /history [@alias]\n"
-            "• /baseline <set|show> [@alias]\n"
-            "• /propose [@alias]\n"
-            "• /simulate_range <tick|eth/usdc|usdc/eth> <bounds|increase_width=…|decrease_width=…> [@alias]\n"
-            "• /rebalance <lower> <upper> [exec] [@alias]\n"
-            "• /collect [exec] [@alias]\n"
-            "• /deposit <token> <amount> [exec] [@alias]\n"
-            "• /withdraw <pool|all> [exec] [@alias]\n"
-            "• /reload\n"
-            "\n"
-            "Gestão de vaults:\n"
-            "• /vault_create <alias> <nfpm> <pool> [rpc]   (deploy + registrar + tornar ativo)\n"
-            "• /vault_add <alias> <vault> [pool] [nfpm] [rpc]\n"
-            "• /vault_select <alias>\n"
-            "• /vault_list\n"
-            "• /vault_setpool <alias> <pool>\n"
-            "\n"
-            "Dica: acrescente @alias no fim do comando p/ agir em um vault específico.\n"
-            "Ex.: /status @ethusdc | /rebalance 181800 182200 exec @ethusdc"
-        )
-    )
+    await _send_help(update, context)
 
 
 def _require_env(name: str) -> str:
@@ -1735,6 +1943,8 @@ def main():
     app.add_handler(CommandHandler("deposit", deposit_cmd))
     app.add_handler(CommandHandler("collect", collect_cmd))
     app.add_handler(CommandHandler("simulate_range", simulate_range_cmd))
+    app.add_handler(CommandHandler("vault_create", vault_create_cmd))
+    app.add_handler(CommandHandler("vault_create_exec", vault_create_exec_cmd))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log_info("Telegram runner up. Listening for commands...")
