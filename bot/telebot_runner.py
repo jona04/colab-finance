@@ -31,6 +31,7 @@ import shlex
 import json
 import subprocess
 import time
+import math
 from html import escape
 from pathlib import Path
 from datetime import datetime, timezone
@@ -89,16 +90,225 @@ def _env_override(mapping: dict[str, str | None]):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-                
+
+# ===== /simulate_range helpers ==================================================
+
+def _price_token1_per_token0_scaled_from_tick(tick: int, dec0: int, dec1: int) -> float:
+    """
+    Returns price token1/token0 with decimals scaling:
+      p_t1_t0_scaled = 1.0001^tick * 10^(dec0 - dec1)
+    """
+    base = pow(1.0001, tick)
+    scale = pow(10.0, dec0 - dec1)
+    return base * scale
+
+def _usdc_eth_views_from_tick(tick: int, dec0: int, dec1: int, usdc_idx: int, eth_idx: int) -> tuple[float, float]:
+    """
+    Given a tick, returns (ETH/USDC, USDC/ETH) respecting pool order.
+    """
+    p_t1_t0 = _price_token1_per_token0_scaled_from_tick(tick, dec0, dec1)
+    # If token1=USDC & token0=ETH -> p_t1_t0 is USDC/ETH; else ETH/USDC
+    if usdc_idx == 1 and eth_idx == 0:
+        usdc_per_eth = p_t1_t0
+        eth_per_usdc = 0.0 if usdc_per_eth == 0 else 1.0 / usdc_per_eth
+    else:
+        eth_per_usdc = p_t1_t0
+        usdc_per_eth = float("inf") if eth_per_usdc == 0 else 1.0 / eth_per_usdc
+    return eth_per_usdc, usdc_per_eth
+
+def _detect_indices_usdc_eth(sym0: str, sym1: str) -> tuple[int, int]:
+    """
+    Returns (usdc_idx, eth_idx) from token symbols. Raises on failure.
+    """
+    s0, s1 = sym0.upper(), sym1.upper()
+
+    def is_usdc(s: str) -> bool:
+        return any(tag in s for tag in ("USDC", "USDBC", "USDCE"))
+
+    def is_eth(s: str) -> bool:
+        return any(tag in s for tag in ("WETH", "ETH"))
+
+    u = 0 if is_usdc(s0) else (1 if is_usdc(s1) else -1)
+    e = 0 if is_eth(s0) else (1 if is_eth(s1) else -1)
+    if u < 0 or e < 0 or u == e:
+        raise ValueError("Unable to detect USDC/ETH indices from symbols.")
+    return u, e
+
+def _tick_from_usdc_per_eth_target(usdc_per_eth: float,
+                                   dec0: int, dec1: int,
+                                   usdc_idx: int, eth_idx: int) -> int:
+    """
+    Returns the integer tick whose scaled p_t1_t0 implies the given USDC/ETH,
+    handling token order automatically.
+
+    If token1=USDC and token0=ETH: p_t1_t0_scaled = USDC/ETH.
+    Else: p_t1_t0_scaled = 1 / (USDC/ETH).
+    """
+    if usdc_per_eth <= 0:
+        raise ValueError("Invalid USDC/ETH price (<=0).")
+
+    if usdc_idx == 1 and eth_idx == 0:
+        desired_p_t1_t0 = float(usdc_per_eth)
+    else:
+        desired_p_t1_t0 = 1.0 / float(usdc_per_eth)
+
+    scale = pow(10.0, dec0 - dec1)
+    base = desired_p_t1_t0 / scale
+    if base <= 0.0:
+        raise ValueError("Invalid scaled price base.")
+    return int(round(math.log(base) / math.log(1.0001)))
+
+def _tick_from_eth_per_usdc_target(eth_per_usdc: float,
+                                   dec0: int, dec1: int,
+                                   usdc_idx: int, eth_idx: int) -> int:
+    """
+    Returns tick from ETH/USDC directly.
+    We transform to USDC/ETH and reuse the function above.
+    """
+    if eth_per_usdc <= 0:
+        raise ValueError("Invalid ETH/USDC price (<=0).")
+    usdc_per_eth = 1.0 / float(eth_per_usdc)
+    return _tick_from_usdc_per_eth_target(usdc_per_eth, dec0, dec1, usdc_idx, eth_idx)
+
+def _align_tick(tick: int, spacing: int, direction: str = "nearest") -> int:
+    """
+    Aligns a tick to tickSpacing.
+      direction: "down" | "up" | "nearest"
+    """
+    r = tick % spacing
+    if direction == "down":
+        return tick - r
+    if direction == "up":
+        return tick + (spacing - r if r != 0 else 0)
+    # nearest
+    down = tick - r
+    up = tick + (spacing - r if r != 0 else 0)
+    return down if abs(down - tick) <= abs(up - tick) else up
+
+def _center_and_width(lower: int, upper: int) -> tuple[float, int]:
+    """
+    Returns (center_float, width_int) in ticks.
+    """
+    return (lower + upper) / 2.0, upper - lower
+
+def _resize_width_around_center(lower: int, upper: int, spacing: int, pct: float, increase: bool) -> tuple[int, int]:
+    """
+    Symmetrically resizes the width around the same center by +/- pct.
+    pct: e.g., 0.10 = 10%
+    increase=True => widen; False => narrow.
+    Result ticks are aligned to spacing and guaranteed lower<upper with at least 1*spacing width.
+    """
+    c, w = _center_and_width(lower, upper)
+    if w <= 0:
+        raise ValueError("Invalid width (<=0).")
+    factor = 1.0 + pct if increase else max(1e-9, 1.0 - pct)
+    new_w = max(spacing, int(round(w * factor / spacing)) * spacing)
+    # keep center, split half/half
+    half = new_w // 2
+    # if even-odd issues, enforce at least 1*spacing separation
+    new_lower = _align_tick(int(round(c)) - half, spacing, "down")
+    new_upper = _align_tick(int(round(c)) + (new_w - (int(round(c)) - new_lower)), spacing, "up")
+    if new_upper <= new_lower:
+        new_upper = new_lower + spacing
+    return new_lower, new_upper
+
+def _parse_percent_flag(arg: str) -> float:
+    """
+    Parses 'increase_width=10%' or 'decrease_width=15%' -> 0.10 / 0.15
+    """
+    m = re.match(r"^(increase_width|decrease_width)\s*=\s*([0-9]+(\.[0-9]+)?)\s*%$", arg.strip(), re.IGNORECASE)
+    if not m:
+        raise ValueError("Invalid width flag. Use increase_width=10% or decrease_width=10%.")
+    pct = float(m.group(2)) / 100.0
+    if pct < 0 or pct > 1e6:
+        raise ValueError("Unreasonable percentage.")
+    return pct
+
+def _estimate_mint_amounts_needed(cur_tick: int, lower: int, upper: int,
+                                  dec0: int, dec1: int) -> tuple[Decimal, Decimal]:
+    """
+    Estimates the *human* (decimals-adjusted) amounts needed for a mint at the current tick,
+    using canonical Uniswap v3 formulas with sqrt ratios.
+    Returns (need0_human, need1_human).
+    Note: For in-range case, both are >0; for out-of-range, it's single-sided.
+    """
+    Pa = _sqrt_ratio_from_tick(lower)
+    Pb = _sqrt_ratio_from_tick(upper)
+    P  = _sqrt_ratio_from_tick(cur_tick)
+
+    # Use L=1 scaling, amounts are proportional to L.
+    # amount0 = L*(Pb - P)/(P*Pb) when P between Pa and Pb; else piecewise
+    # amount1 = L*(P - Pa)         when P between Pa and Pb; else piecewise
+    if P <= Pa:
+        amt0 = (Pb - Pa) / (Pa * Pb)  # token0-only
+        amt1 = Decimal(0)
+    elif P >= Pb:
+        amt0 = Decimal(0)
+        amt1 = (Pb - Pa)              # token1-only
+    else:
+        amt0 = (Pb - P) / (P * Pb)
+        amt1 = (P - Pa)
+
+    # humanize: amounts per unit of L, caller can scale if desired.
+    h0 = amt0  # already dimensionless for per-L; will just present ratios
+    h1 = amt1
+    # we keep them as "per unit of L". Users can read proportion; we also show vault balances next to it.
+    return (h0, h1)
+
+def _read_idle_and_pool_amounts(ch: Chain, dec0: int, dec1: int) -> tuple[Decimal, Decimal, Decimal, Decimal, int, int, int]:
+    """
+    Reads idle balances (token0/token1), current tick, and estimates pool amounts from current liquidity.
+    Returns (idle0, idle1, pool0, pool1, lower, upper, cur_tick) — all balances in human units.
+    """
+    t0 = ch.pool.functions.token0().call()
+    t1 = ch.pool.functions.token1().call()
+    c0 = ch.erc20(t0)
+    c1 = ch.erc20(t1)
+    idle0 = Decimal(c0.functions.balanceOf(ch.vault.address).call()) / (Decimal(10) ** dec0)
+    idle1 = Decimal(c1.functions.balanceOf(ch.vault.address).call()) / (Decimal(10) ** dec1)
+
+    token_id = _read_token_id_from_vault(ch)
+    lower = upper = 0
+    pool0 = pool1 = Decimal(0)
+    cur_tick = int(ch.pool.functions.slot0().call()[1])
+
+    if token_id > 0:
+        pos = ch.nfpm.functions.positions(token_id).call()
+        lower = int(pos[5]); upper = int(pos[6])
+        L = abs(int(pos[7]))
+        if L > 0:
+            a0, a1 = _amounts_from_liquidity(L, cur_tick, lower, upper)
+            pool0 = a0 / (Decimal(10) ** dec0)
+            pool1 = a1 / (Decimal(10) ** dec1)
+
+    return idle0, idle1, pool0, pool1, lower, upper, cur_tick
+
+def _fmt_range_block_html(lower: int, upper: int, spacing: int,
+                          dec0: int, dec1: int, usdc_idx: int, eth_idx: int) -> str:
+    """
+    Builds an HTML block with ticks and prices at bounds in both views.
+    """
+    e_low, u_low = _usdc_eth_views_from_tick(lower, dec0, dec1, usdc_idx, eth_idx)
+    e_up,  u_up  = _usdc_eth_views_from_tick(upper, dec0, dec1, usdc_idx, eth_idx)
+    return (
+        f"<b>Range</b> ticks: <code>{lower}</code> → <code>{upper}</code>  (spacing=<code>{spacing}</code>)\n"
+        f"• ETH/USDC: lower=<code>{e_low:.10f}</code> | upper=<code>{e_up:.10f}</code>\n"
+        f"• USDC/ETH: lower=<code>{u_low:.2f}</code> | upper=<code>{u_up:.2f}</code>"
+    )
+              
+def _sqrt_ratio_from_tick(tick: int) -> Decimal:
+    # sqrt(1.0001^tick)  — versão float/Decimal (aprox. suficiente para exibição)
+    return Decimal(1.0001) ** (Decimal(tick) / Decimal(2))
+
+
+# balances_cmd helpers
+
 def _erc20_meta(ch: Chain, addr: str):
     c = ch.erc20(addr)
     sym = c.functions.symbol().call()
     dec = int(c.functions.decimals().call())
     return c, sym, dec
 
-def _sqrt_ratio_from_tick(tick: int) -> Decimal:
-    # sqrt(1.0001^tick)  — versão float/Decimal (aprox. suficiente para exibição)
-    return Decimal(1.0001) ** (Decimal(tick) / Decimal(2))
 
 def _amounts_from_liquidity(liq: int, cur_tick: int, lower: int, upper: int):
     """
@@ -168,6 +378,8 @@ def _allowed_chat(update: Update) -> bool:
 
     return False
 
+
+# rebalance_cmd helpers
 
 def _validate_ticks(lower: int, upper: int, spacing: int):
     """
@@ -395,7 +607,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• /history [@alias]\n"
             "• /baseline <set|show> [@alias]\n"
             "• /propose [@alias]\n"
+            "• /simulate_range <tick|eth/usdc|usdc/eth> <bounds|increase_width=…|decrease_width=…> [@alias]\n"
             "• /rebalance <lower> <upper> [exec] [@alias]\n"
+            "• /collect [exec] [@alias]\n"
             "• /deposit <token> <amount> [exec] [@alias]\n"
             "• /withdraw <pool|all> [exec] [@alias]\n"
             "• /reload\n"
@@ -1253,7 +1467,200 @@ async def collect_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await _reply(update, context, f"⚠️ /collect error: {e}")
         
-  
+
+async def simulate_range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /simulate_range <mode> <args...> [@alias]
+
+    Accepted forms:
+      1) Explicit bounds (any price view or ticks):
+         • /simulate_range tick <lowerTick> <upperTick> [@alias]
+         • /simulate_range eth/usdc <lower> <upper> [@alias]
+         • /simulate_range usdc/eth <lower> <upper> [@alias]
+
+      2) Resize current range symmetrically (keep center):
+         • /simulate_range usdc/eth increase_width=10% [@alias]
+         • /simulate_range usdc/eth decrease_width=10% [@alias]
+         (Keyword can be 'usdc/eth' or 'eth/usdc' or 'tick' — it only controls
+          how we display prices; the resize works in ticks from the current position.)
+
+    What it prints:
+      - Target ticks aligned to spacing + both price views at bounds
+      - Current price in both views
+      - "Per-unit-L" mint ratio (how token0/token1 would be used if you minted now)
+      - Vault balances: idle and pool amounts, plus a simple feasibility note (no swaps)
+        * Idle-only: how much is usable right now (excess token will be unused)
+        * Exit+Mint: indicative amounts if you first exit the position to idle, then mint
+    """
+    if not _allowed_chat(update):
+        return
+    try:
+        args = context.args or []
+        if not args:
+            await _reply(update, context,
+                "Usage:\n"
+                "  /simulate_range tick <lowerTick> <upperTick> [@alias]\n"
+                "  /simulate_range eth/usdc <lower> <upper> [@alias]\n"
+                "  /simulate_range usdc/eth <lower> <upper> [@alias]\n"
+                "  /simulate_range usdc/eth increase_width=10% [@alias]\n"
+                "  /simulate_range usdc/eth decrease_width=10% [@alias]"
+            )
+            return
+
+        # Resolve alias (supports trailing @alias)
+        alias = _resolve_alias_from_args(args)
+
+        mode = args[0].lower()
+        # if user passed only mode + flag form, args length could be 2
+        params = args[1:]
+
+        CTX = MVCTX.get_or_create(alias)
+        ch = CTX.ch
+        s  = CTX.s
+
+        meta = ch.pool_meta()
+        spacing = int(meta["spacing"])
+        dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
+        sym0, sym1 = meta["sym0"], meta["sym1"]
+        usdc_idx, eth_idx = _detect_indices_usdc_eth(sym0, sym1)
+
+        # live context (idle/pool/current)
+        idle0, idle1, pool0, pool1, cur_lower, cur_upper, cur_tick = _read_idle_and_pool_amounts(ch, dec0, dec1)
+
+        # CURRENT PRICES
+        eth_per_usdc_cur, usdc_per_eth_cur = _usdc_eth_views_from_tick(cur_tick, dec0, dec1, usdc_idx, eth_idx)
+
+        # ------ Resolve target lower/upper ------
+        lower = upper = None
+
+        def _align_pair(l: int, u: int) -> tuple[int, int]:
+            _l = _align_tick(int(l), spacing, "down")
+            _u = _align_tick(int(u), spacing, "up")
+            if _u <= _l:
+                _u = _l + spacing
+            return _l, _u
+
+        if mode in ("tick", "ticks"):
+            if len(params) < 2:
+                await _reply(update, context, "Usage: /simulate_range tick <lowerTick> <upperTick> [@alias]")
+                return
+            lower, upper = _align_pair(int(params[0]), int(params[1]))
+
+        elif mode in ("eth/usdc", "ethusdc", "eth_usdc"):
+            if len(params) >= 2 and ("width=" not in params[0].lower()):
+                # explicit bounds in ETH/USDC
+                pL = float(params[0]); pU = float(params[1])
+                tl = _tick_from_eth_per_usdc_target(pL, dec0, dec1, usdc_idx, eth_idx)
+                tu = _tick_from_eth_per_usdc_target(pU, dec0, dec1, usdc_idx, eth_idx)
+                lower, upper = _align_pair(min(tl, tu), max(tl, tu))
+            else:
+                # resize flags
+                if len(params) < 1:
+                    await _reply(update, context, "Usage: /simulate_range eth/usdc increase_width=10% [@alias]")
+                    return
+                if cur_lower == 0 and cur_upper == 0:
+                    await _reply(update, context, "No active position to resize. Use explicit bounds instead.")
+                    return
+                flag = params[0]
+                pct = _parse_percent_flag(flag)  # returns 0.xx
+                inc = flag.lower().startswith("increase_width")
+                lower, upper = _resize_width_around_center(cur_lower, cur_upper, spacing, pct, increase=inc)
+
+        elif mode in ("usdc/eth", "usdce_th", "usdceth", "usdc_eth"):
+            if len(params) >= 2 and ("width=" not in params[0].lower()):
+                # explicit bounds in USDC/ETH
+                pL = float(params[0]); pU = float(params[1])
+                tl = _tick_from_usdc_per_eth_target(pL, dec0, dec1, usdc_idx, eth_idx)
+                tu = _tick_from_usdc_per_eth_target(pU, dec0, dec1, usdc_idx, eth_idx)
+                lower, upper = _align_pair(min(tl, tu), max(tl, tu))
+            else:
+                if len(params) < 1:
+                    await _reply(update, context, "Usage: /simulate_range usdc/eth increase_width=10% [@alias]")
+                    return
+                if cur_lower == 0 and cur_upper == 0:
+                    await _reply(update, context, "No active position to resize. Use explicit bounds instead.")
+                    return
+                flag = params[0]
+                pct = _parse_percent_flag(flag)
+                inc = flag.lower().startswith("increase_width")
+                lower, upper = _resize_width_around_center(cur_lower, cur_upper, spacing, pct, increase=inc)
+        else:
+            await _reply(update, context,
+                "First argument must be one of: tick | eth/usdc | usdc/eth"
+            )
+            return
+
+        # ------ Build simulation ------
+        # Show prices at bounds:
+        block_range = _fmt_range_block_html(lower, upper, spacing, dec0, dec1, usdc_idx, eth_idx)
+
+        # Per-unit-L mint “needs” at current price (no slippage math here; just canonical proportions)
+        need0_perL, need1_perL = _estimate_mint_amounts_needed(cur_tick, lower, upper, dec0, dec1)
+
+        # Feasibility / utilization notes (no swaps):
+        # Idle-only case: if you try to mint now using only idle balances, whichever side is short caps L.
+        # We show how much of each would be used if limited by the short side.
+        # Convert Decimal->float for display nicely
+        i0, i1 = float(idle0), float(idle1)
+        p0, p1 = float(pool0), float(pool1)
+        n0, n1 = float(need0_perL), float(need1_perL)
+
+        def _utilization(id0: float, id1: float) -> tuple[float, float, float]:
+            """
+            Returns (L_cap, used0, used1) given idle balances and per-unit needs.
+            """
+            # Handle degenerate ranges (pure single-sided if P <= Pa or P >= Pb)
+            if n0 == 0 and n1 == 0:
+                return (0.0, 0.0, 0.0)
+            if n0 == 0:
+                L_cap = id1 / n1 if n1 > 0 else 0.0
+                return (L_cap, 0.0, min(id1, L_cap * n1))
+            if n1 == 0:
+                L_cap = id0 / n0 if n0 > 0 else 0.0
+                return (L_cap, min(id0, L_cap * n0), 0.0)
+            # general case
+            L_by0 = id0 / n0 if n0 > 0 else float("inf")
+            L_by1 = id1 / n1 if n1 > 0 else float("inf")
+            L_cap = min(L_by0, L_by1)
+            return (L_cap, min(id0, L_cap * n0), min(id1, L_cap * n1))
+
+        # idle-only
+        L_idle, used0_idle, used1_idle = _utilization(i0, i1)
+        # exit+mint (idle + pool) — indicative if user first exits position
+        L_all, used0_all, used1_all = _utilization(i0 + p0, i1 + p1)
+
+        # Current price views
+        e_cur, u_cur = eth_per_usdc_cur, usdc_per_eth_cur
+
+        # Output HTML
+        lines = []
+        lines.append("<b>/simulate_range</b>")
+        lines.append(f"<b>Vault:</b> <code>{escape(CTX.ch.vault.address)}</code>  |  Pool tickSpacing=<code>{spacing}</code>")
+        lines.append("")
+        lines.append(block_range)
+        lines.append("")
+        lines.append("<b>Current price</b>")
+        lines.append(f"• ETH/USDC=<code>{e_cur:.10f}</code>  |  USDC/ETH=<code>{u_cur:.2f}</code>  |  tick=<code>{cur_tick}</code>")
+        lines.append("")
+        lines.append("<b>Per-unit-L mint proportion (no swap)</b>")
+        lines.append(f"• needs: token0=<code>{n0:.10f}</code>  |  token1=<code>{n1:.10f}</code>")
+        lines.append("")
+        lines.append("<b>Vault balances</b>")
+        lines.append(f"• idle: {escape(sym0)}=<code>{i0:.6f}</code>  |  {escape(sym1)}=<code>{i1:.6f}</code>")
+        lines.append(f"• pool: {escape(sym0)}=<code>{p0:.6f}</code>  |  {escape(sym1)}=<code>{p1:.6f}</code>")
+        lines.append("")
+        lines.append("<b>Utilization (no swaps)</b>")
+        lines.append("• Idle-only mint:")
+        lines.append(f"   L_cap≈<code>{L_idle:.6f}</code>  |  uses {escape(sym0)}=<code>{used0_idle:.6f}</code>  &  {escape(sym1)}=<code>{used1_idle:.6f}</code>")
+        lines.append("• Exit-then-mint (indicative):")
+        lines.append(f"   L_cap≈<code>{L_all:.6f}</code>  |  uses {escape(sym0)}=<code>{used0_all:.6f}</code>  &  {escape(sym1)}=<code>{used1_all:.6f}</code>")
+
+        await _reply(update, context, "\n".join(lines), parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        await _reply(update, context, f"⚠️ /simulate_range error: {e}")
+        
+         
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Default handler for unrecognized messages.
@@ -1271,7 +1678,9 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• /history [@alias]\n"
             "• /baseline <set|show> [@alias]\n"
             "• /propose [@alias]\n"
+            "• /simulate_range <tick|eth/usdc|usdc/eth> <bounds|increase_width=…|decrease_width=…> [@alias]\n"
             "• /rebalance <lower> <upper> [exec] [@alias]\n"
+            "• /collect [exec] [@alias]\n"
             "• /deposit <token> <amount> [exec] [@alias]\n"
             "• /withdraw <pool|all> [exec] [@alias]\n"
             "• /reload\n"
@@ -1325,6 +1734,7 @@ def main():
     app.add_handler(CommandHandler("vault_setpool", vault_set_pool_cmd))
     app.add_handler(CommandHandler("deposit", deposit_cmd))
     app.add_handler(CommandHandler("collect", collect_cmd))
+    app.add_handler(CommandHandler("simulate_range", simulate_range_cmd))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log_info("Telegram runner up. Listening for commands...")
