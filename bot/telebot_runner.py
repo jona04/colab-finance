@@ -94,6 +94,32 @@ HELP_TEXT = (
     "Ex.: /status @ethusdc | /rebalance usdc/eth 2500 3500 exec @ethusdc"
 )
 
+
+def load_strategies(path: str | None = None):
+    """
+    Reads strategies JSON from disk. Defaults to:
+      bot/strategy/examples/strategies.json
+
+    Raises FileNotFoundError if not present.
+    """
+    if path is None:
+        base = Path(__file__).resolve().parent
+        path = base / "strategy" / "examples" / "strategies.json"
+    else:
+        path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Strategies file not found: {path}")
+
+    return json.loads(path.read_text(encoding="utf-8"))
+
+try:
+    STRATEGIES = load_strategies(os.environ.get("STRATEGIES_FILE"))
+    log_info(f"Loaded {len(STRATEGIES)} strategies.")
+except Exception as _e:
+    STRATEGIES = []
+    log_warn(f"Failed to load strategies: {_e}")
+    
 async def _send_help(update, context):
     """
     Small helper to send the unified help text.
@@ -452,25 +478,6 @@ def _read_token_id_from_vault(ch: Chain) -> int:
     except Exception:
         pass
     return 0
-
-
-def load_strategies(path: str | None = None):
-    """
-    Reads strategies JSON from disk. Defaults to:
-      bot/strategy/examples/strategies.json
-
-    Raises FileNotFoundError if not present.
-    """
-    if path is None:
-        base = Path(__file__).resolve().parent
-        path = base / "strategy" / "examples" / "strategies.json"
-    else:
-        path = Path(path)
-
-    if not path.exists():
-        raise FileNotFoundError(f"Strategies file not found: {path}")
-
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def evaluate_all(strategies, obs):
@@ -992,6 +999,11 @@ async def propose_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         obs = CTX.observer.snapshot(twap_window=CTX.s.twap_window)
 
+        # Always show each ACTIVE strategy with its status.
+        if not STRATEGIES:
+            await _reply(update, context, "ℹ️ No strategies loaded. Use /reload or provide strategies.json.")
+            return
+        
         # Always show each ACTIVE strategy with its status.
         strategies = [st for st in STRATEGIES if st.get("active", True)]
         if not strategies:
