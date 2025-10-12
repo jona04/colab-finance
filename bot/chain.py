@@ -49,6 +49,11 @@ ABI_VAULT = [
   {"name":"currentRange","outputs":[{"type":"int24"},{"type":"int24"},{"type":"uint128"}],"inputs":[],"stateMutability":"view","type":"function"},
   {"name":"twapOk","outputs":[{"type":"bool"}],"inputs":[],"stateMutability":"view","type":"function"},
   {"name":"lastRebalance","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
+  {"name":"minWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
+  {"name":"maxWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
+  {"name":"minCooldown","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
+  {"name":"twapWindow","outputs":[{"type":"uint32"}],"inputs":[],"stateMutability":"view","type":"function"},
+  {"name":"maxTwapDeviationTicks","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
 ]
 
 U128_MAX = (1<<128) - 1
@@ -153,10 +158,31 @@ class Chain:
         (a0, a1) = self.nfpm.functions.collect((token_id, Web3.to_checksum_address(recipient), U128_MAX, U128_MAX)).call()
         return int(a0), int(a1)
 
-    # -------- derived --------
-
     def amounts_in_position_now(self, lower: int, upper: int, liq: int) -> Tuple[int,int]:
         sqrtP, _ = self.slot0()
         sqrtA = get_sqrt_ratio_at_tick(lower)
         sqrtB = get_sqrt_ratio_at_tick(upper)
         return get_amounts_for_liquidity(sqrtP, sqrtA, sqrtB, liq)
+
+    def vault_limits(self) -> dict:
+        """
+        Returns min/max width and basic guards configured in the vault.
+        Useful for bot-side validation and user messages.
+        """
+        try:
+            min_w = int(self.vault.functions.minWidth().call())
+            max_w = int(self.vault.functions.maxWidth().call())
+        except Exception:
+            min_w = None
+            max_w = None
+        try:
+            cool = int(self.vault.functions.minCooldown().call())
+        except Exception:
+            cool = None
+        try:
+            twap_win = int(self.vault.functions.twapWindow().call())
+            twap_dev = int(self.vault.functions.maxTwapDeviationTicks().call())
+        except Exception:
+            twap_win = None
+            twap_dev = None
+        return {"minWidth": min_w, "maxWidth": max_w, "minCooldown": cool, "twapWindow": twap_win, "maxTwapDeviationTicks": twap_dev}

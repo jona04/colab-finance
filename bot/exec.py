@@ -119,7 +119,8 @@ def main():
     parser.add_argument("--vault-exit-withdraw", action="store_true", help="Exit position and withdraw all to owner.")
     parser.add_argument("--deposit", action="store_true", help="Deposit ERC20 into the vault (simple transfer).")
     parser.add_argument("--collect", action="store_true", help="Collect pending fees into the vault (no liquidity change).")
-
+    parser.add_argument("--open", action="store_true", help="Open the initial position with given ticks.")
+    
     # --- Deposit args ---
     parser.add_argument("--token", type=str, help="ERC20 token address to deposit")
     parser.add_argument("--amount", type=str, help="Human amount (e.g., 1000.5)")
@@ -139,16 +140,17 @@ def main():
     # -----------------------------
     # Mode resolution (keep your pattern)
     # -----------------------------
+    mode_open           = bool(args.open)
     mode_deploy         = bool(args.deploy_vault)
     mode_collect        = bool(args.collect)
     mode_exit           = bool(args.vault_exit)
     mode_exit_withdraw  = bool(args.vault_exit_withdraw)
     mode_deposit        = bool(args.deposit)
     mode_caps           = bool(args.rebalance_caps)  # modifier, not a mode
-    mode_rebalance      = not (mode_exit or mode_exit_withdraw or mode_deposit or mode_collect or mode_deploy)
+    mode_rebalance      = not (mode_open or mode_exit or mode_exit_withdraw or mode_deposit or mode_collect or mode_deploy)
 
     # Exactly one main mode among: deploy, collect, exit, exit_withdraw, deposit, rebalance
-    if sum([mode_deploy, mode_collect, mode_exit, mode_exit_withdraw, mode_deposit, mode_rebalance]) != 1:
+    if sum([mode_open, mode_deploy, mode_collect, mode_exit, mode_exit_withdraw, mode_deposit, mode_rebalance]) != 1:
         raise RuntimeError(
             "Select exactly one mode: "
             "--deploy-vault | --collect | --vault-exit | --vault-exit-withdraw | --deposit | (rebalance default)"
@@ -157,6 +159,11 @@ def main():
     if mode_exit and mode_exit_withdraw:
         raise RuntimeError("Use only one of --vault-exit OR --vault-exit-withdraw (not both).")
 
+    if mode_open:
+        if args.lower is None or args.upper is None:
+            raise RuntimeError("Open mode requires --lower and --upper.")
+        action_label = f"Open initial position lower={args.lower}, upper={args.upper}"
+        
     # -----------------------------
     # Settings
     # -----------------------------
@@ -177,7 +184,9 @@ def main():
         pool = v.get("pool")
         # alias used to write state history per vault (if provided as @alias)
         alias_for_state = (args.vault[1:] if args.vault and args.vault.startswith("@") else "default")
-
+    else:
+        alias_for_state = args.alias
+        
     # -----------------------------
     # Per-mode validations + label
     # -----------------------------
@@ -260,7 +269,7 @@ def main():
             env["TOKEN_ADDRESS"] = tok
             env["AMOUNT_RAW"] = str(amt_raw)
 
-        if mode_rebalance:
+        if mode_open or mode_rebalance:
             env["LOWER_TICK"] = str(args.lower)
             env["UPPER_TICK"] = str(args.upper)
             if mode_caps:
@@ -295,6 +304,8 @@ def main():
         script_target = env.get("FORGE_SCRIPT_COLLECT_FILE", "script/VaultCollect.s.sol:VaultCollect")
     elif mode_caps:
         script_target = env.get("FORGE_SCRIPT_REBALANCE_CAPS_FILE", "script/RebalanceCaps.s.sol:RebalanceCaps")
+    elif mode_open:
+        script_target = env.get("FORGE_SCRIPT_OPEN_FILE", "script/OpenInitialPosition.s.sol:OpenInitialPosition")
     else:
         script_target = env.get("FORGE_SCRIPT_FILE", "script/RebalanceManual.s.sol:RebalanceManual")
 
@@ -370,11 +381,12 @@ def main():
             "lower": args.lower if mode_rebalance else None,
             "upper": args.upper if mode_rebalance else None,
             "mode": (
-                "collect" if mode_collect else
-                ("rebalance_caps" if mode_caps else
-                 ("deposit" if mode_deposit else
-                  ("exit_withdraw" if mode_exit_withdraw else
-                   ("exit" if mode_exit else "rebalance"))))
+                "open" if mode_open else
+                ("collect" if mode_collect else
+                 ("rebalance_caps" if mode_caps else
+                  ("deposit" if mode_deposit else
+                   ("exit_withdraw" if mode_exit_withdraw else
+                    ("exit" if mode_exit else "rebalance")))))
             ),
             "tx": txh,
             "stdout_tail": proc.stdout[-3000:],

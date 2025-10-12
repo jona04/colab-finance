@@ -81,6 +81,7 @@ HELP_TEXT = (
     "• /deposit <token> <amount> [exec] [@alias]\n"
     "• /withdraw <pool|all> [exec] [@alias]\n"
     "• /reload\n"
+    "• /open <lower> <upper> [exec] [@alias]\n"
     "\n"
     "Gestão de vaults:\n"
     "• /vault_create <alias> <nfpm> <pool> [rpc]   (deploy + registrar + tornar ativo)\n"
@@ -704,6 +705,9 @@ async def balances_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         alias = _resolve_alias_from_args(args)
         CTX = MVCTX.get_or_create(alias)
         
+        v = vault_get(alias) or {}
+        vault_address = v.get("address")
+        
         s = CTX.s
         ch = CTX.ch
         obs = CTX.observer.snapshot(twap_window=s.twap_window)
@@ -715,8 +719,8 @@ async def balances_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c1, sym1, dec1 = _erc20_meta(ch, t1)
 
         # Vault "free" balances (not in the position)
-        bal0 = Decimal(c0.functions.balanceOf(s.vault).call()) / (Decimal(10) ** dec0)
-        bal1 = Decimal(c1.functions.balanceOf(s.vault).call()) / (Decimal(10) ** dec1)
+        bal0 = Decimal(c0.functions.balanceOf(vault_address).call()) / (Decimal(10) ** dec0)
+        bal1 = Decimal(c1.functions.balanceOf(vault_address).call()) / (Decimal(10) ** dec1)
 
         # Uncollected fees (already humanized by observer)
         fees_h = obs.get("fees_human", {})
@@ -768,7 +772,7 @@ async def balances_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Build HTML reply
         html = []
-        html.append(f"<b>Vault:</b> <code>{escape(s.vault)}</code>")
+        html.append(f"<b>Vault:</b> <code>{escape(vault_address)}</code>")
         if token_id > 0:
             html.append(f"<b>Position tokenId:</b> <code>{token_id}</code>")
         else:
@@ -1914,7 +1918,84 @@ async def vault_create_exec_cmd(update, context):
         )
     except Exception as e:
         await _reply(update, context, f"⚠️ /vault_create_exec error: {e}")
-             
+        
+async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /open <lower> <upper> [exec] [@alias]
+
+    Opens the initial Uniswap V3 position in the vault using the provided tick bounds.
+    Validations:
+      - Pool must be configured for the selected vault.
+      - There must be NO active position (positionTokenId==0) — otherwise suggest /rebalance.
+      - Ticks must be multiples of tickSpacing and lower < upper.
+
+    Behavior:
+      - Dry-run: prints aligned ticks and basic validations.
+      - Exec: calls python -m bot.exec --open --lower L --upper U --vault @alias --execute
+    """
+    if not _allowed_chat(update):
+        return
+
+    try:
+        args = context.args or []
+        alias = _resolve_alias_from_args(args)
+        CTX = MVCTX.get_or_create(alias)
+
+        if len(args) < 2:
+            await _reply(update, context, "Usage: /open <lower> <upper> [exec] [@alias]")
+            return
+
+        lower = int(args[0])
+        upper = int(args[1])
+        do_exec = (len(args) >= 3 and args[2].lower() in ("exec", "execute", "run"))
+
+        # pool must be set
+        vrow = vault_get(alias) or {}
+        if not vrow.get("pool"):
+            await _reply(update, context, f"⚠️ Vault @{alias} has no pool set. Use /vault_setpool <alias> <pool>.")
+            return
+
+        # must not have position yet
+        if CTX.ch.has_position():
+            await _reply(update, context, "⚠️ Position already exists. Use /rebalance instead.")
+            return
+
+        spacing = CTX.ch.pool.functions.tickSpacing().call()
+        try:
+            _validate_ticks(lower, upper, spacing)
+        except Exception as ve:
+            await _reply(update, context, f"⚠️ {ve}")
+            return
+
+        if not do_exec:
+            await _reply(
+                update, context,
+                (
+                    "🧪 Dry-run /open (initial mint)\n"
+                    f"• aligned ticks: lower={lower} upper={upper}\n"
+                    f"• tickSpacing={spacing}\n\n"
+                    "To execute: /open <lower> <upper> exec [@alias]"
+                )
+            )
+            return
+
+        cmd = f"python -m bot.exec --open --lower {lower} --upper {upper} --execute --vault @{alias}"
+        await _reply(update, context, f"🚀 Executing:\n<code>{escape(cmd)}</code>", parse_mode=ParseMode.HTML)
+
+        proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True, env=os.environ)
+        if proc.returncode != 0:
+            await _reply(
+                update, context,
+                f"❌ Execution failed:\n<pre><code>{escape(proc.stderr or proc.stdout)[:3500]}</code></pre>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        out = proc.stdout[-3000:]
+        await _reply(update, context, f"✅ Open complete.\n<pre><code>{escape(out)}</code></pre>", parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        await _reply(update, context, f"⚠️ /open error: {e}")        
          
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1964,6 +2045,7 @@ def main():
     app.add_handler(CommandHandler("simulate_range", simulate_range_cmd))
     app.add_handler(CommandHandler("vault_create", vault_create_cmd))
     app.add_handler(CommandHandler("vault_create_exec", vault_create_exec_cmd))
+    app.add_handler(CommandHandler("open", open_cmd))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log_info("Telegram runner up. Listening for commands...")
