@@ -28,7 +28,7 @@ Notes:
 
 import os
 import shlex
-
+import re
 import subprocess
 
 from html import escape
@@ -36,7 +36,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from telegram import Update
-from telegram.constants import ParseMode, ChatType
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 )
@@ -57,6 +57,15 @@ from bot.vault_registry import (
 )
 from bot.state_utils import path_for
 from bot.state_utils import load as _state_load, save as _state_save
+from bot.telebot_utils import (_add_collected_fees_to_state,_align_tick,_allowed_chat,
+                               _amounts_from_liquidity,_detect_indices_usdc_eth,
+                               _erc20_meta,_estimate_mint_amounts_needed,_fmt_breakeven_details_html,
+                               _fmt_range_block_html,_load_bot_state_for,_parse_percent_flag,
+                               _read_idle_and_pool_amounts,_read_token_id_from_vault,_reason_when_not_triggered,
+                               _reply,_resize_width_around_center,_resolve_alias_from_args,_save_bot_state_for,
+                               _state_load,_state_save,_tick_from_eth_per_usdc_target,
+                               _tick_from_usdc_per_eth_target,_usdc_eth_views_from_tick,_validate_ticks,fmt_prices_block,
+                               active_alias,fmt_state_block,fmt_usd_panel,get_settings,load_strategies,evaluate_all)
 
 getcontext().prec = 60  # precisão boa para os cálculos de sqrt/amounts
 
