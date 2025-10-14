@@ -1,0 +1,114 @@
+"""
+Per-alias state repository (state/<alias>.json).
+Used to track position, liquidity, ticks, history, etc.
+"""
+
+import json
+from pathlib import Path
+from typing import Dict, Any, Optional
+from datetime import datetime
+from ..config import get_settings
+
+def _dex_root(dex: str) -> Path:
+    s = get_settings()
+    return Path(s.DATA_ROOT) / dex
+
+def _state_dir(dex: str) -> Path:
+    return _dex_root(dex) / "state"
+
+def _state_path(dex: str, alias: str) -> Path:
+    return _state_dir(dex) / f"{alias}.json"
+
+def ensure_dirs(dex: str):
+    _state_dir(dex).mkdir(parents=True, exist_ok=True)
+
+def load_state(dex: str, alias: str) -> Dict[str, Any]:
+    ensure_dirs(dex)
+    p = _state_path(dex, alias)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
+
+def save_state(dex: str, alias: str, data: Dict[str, Any]):
+    ensure_dirs(dex)
+    _state_path(dex, alias).write_text(json.dumps(data, indent=2))
+
+def update_state(dex: str, alias: str, updates: Dict[str, Any]):
+    """Merge partial updates into the current state."""
+    cur = load_state(dex, alias)
+    cur.update(updates)
+    save_state(dex, alias, cur)
+
+def ensure_state_initialized(
+    dex: str,
+    alias: str,
+    *,
+    vault_address: Optional[str] = None,
+    nfpm: Optional[str] = None,
+    pool: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Ensure a minimal state document exists.
+    Returns the up-to-date state.
+    """
+    st = load_state(dex, alias)
+    if not st:
+        st = {
+            "vault_address": vault_address,
+            "nfpm": nfpm,
+            "pool": pool,
+            "created_at": datetime.utcnow().isoformat(),
+            "positions": [],
+            # running totals and histories
+            "fees_collected_cum": {"token0_raw": 0, "token1_raw": 0},
+            "fees_cum_usd": 0.0,
+            "exec_history": [],
+            "collect_history": [],
+            "deposit_history": [],
+        }
+        save_state(dex, alias, st)
+    else:
+        # fill fields if missing
+        if vault_address and not st.get("vault_address"):
+            st["vault_address"] = vault_address
+        if nfpm and not st.get("nfpm"):
+            st["nfpm"] = nfpm
+        if pool and not st.get("pool"):
+            st["pool"] = pool
+        save_state(dex, alias, st)
+    return st
+
+def append_history(dex: str, alias: str, key: str, entry: Dict[str, Any], limit: int = 200):
+    """
+    Append an entry to a history array (e.g., exec_history, collect_history),
+    trimming to the most recent `limit` items.
+    """
+    st = load_state(dex, alias)
+    arr = st.get(key, [])
+    arr.append(entry)
+    st[key] = arr[-limit:]
+    save_state(dex, alias, st)
+
+def add_collected_fees_snapshot(
+    dex: str,
+    alias: str,
+    *,
+    fees0_raw: int,
+    fees1_raw: int,
+    fees_usd_est: float
+):
+    """
+    Add a pre-exec fee snapshot to cumulative counters — same policy as the bot:
+    you add the *pre-collect* values if the tx succeeds.
+    """
+    st = load_state(dex, alias)
+    cum = st.get("fees_collected_cum", {"token0_raw": 0, "token1_raw": 0})
+    cum["token0_raw"] = int(cum.get("token0_raw", 0)) + int(fees0_raw or 0)
+    cum["token1_raw"] = int(cum.get("token1_raw", 0)) + int(fees1_raw or 0)
+    st["fees_collected_cum"] = cum
+    st["fees_cum_usd"] = float(st.get("fees_cum_usd", 0.0)) + float(fees_usd_est or 0.0)
+    st["last_fees_update_ts"] = datetime.utcnow().isoformat()
+    save_state(dex, alias, st)

@@ -1,0 +1,17 @@
+{
+  "active": "vault2",
+  "vaults": {
+    "vault1": {
+      "address": "0xE8F4b87453695507C4Df5d3691d4E55C0855d1BD",
+      "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+      "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+      "rpc_url": "https://ethereum-sepolia-rpc.publicnode.com"
+    },
+    "vault2": {
+      "address": "0x0F6df3DA2243eb214f1396aa4c708ed8764CC849",
+      "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+      "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+      "rpc_url": "https://ethereum-sepolia-rpc.publicnode.com"
+    }
+  }
+}
