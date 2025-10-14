@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import { INonfungiblePositionManagerMinimal as NFPM } from
-    "../interfaces/INonfungiblePositionManagerMinimal.sol";
+    "../../interfaces/INonfungiblePositionManagerMinimal.sol";
 
 /// @title Thin adapter around NonfungiblePositionManager calls
 /// @notice This adapter exists to isolate periphery changes and simplify mocks in tests.

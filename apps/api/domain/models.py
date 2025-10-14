@@ -30,10 +30,13 @@ class SetPoolRequest(BaseModel):
 class DeployVaultRequest(BaseModel):
     alias: str
     nfpm: str
-    pool: Optional[str] = None
+    pool: str
     rpc_url: Optional[str] = None
-    dex: DexName = "uniswap"
-
+    dex: Literal["uniswap", "aerodrome"]
+    version: Literal["v1","v2"] = "v2"
+    owner: Optional[str] = None            # se None, usamos SENDER_FROM_ENV do TxService
+    gauge: Optional[str] = None            # só Aerodrome (opcional)
+    
 class OpenRequest(BaseModel):
     alias: str
     lower: int

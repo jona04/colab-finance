@@ -1,8 +1,9 @@
 {
-  "vault_address": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
-  "nfpm": "0x827922686190790b37229fd06084350E74485b72",
-  "pool": "0xdbc6998296caA1652A810dc8D3BaF4A8294330f1",
-  "created_at": "2025-10-14T01:43:23.639130",
+  "vault_address": "0x7435DcB29bF9219EF11746ED84205117Ba0aae08",
+  "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+  "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+  "gauge": null,
+  "created_at": "2025-10-14T18:08:00.646638",
   "positions": [],
   "fees_collected_cum": {
     "token0_raw": 0,
@@ -11,30 +12,68 @@
   "fees_cum_usd": 0.0,
   "exec_history": [
     {
-      "ts": "2025-10-14T01:43:23.639482",
-      "mode": "deploy_vault",
-      "vault": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
-      "pool": "0xdbc6998296caA1652A810dc8D3BaF4A8294330f1",
-      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
-      "tx": "f63cf717ab1e278e53c14226b1c822199bfbeacd27e1d8b12cd05fb589cf9015"
+      "ts": "2025-10-14T18:08:00.646971",
+      "mode": "deploy_vault_v2",
+      "vault": "0x7435DcB29bF9219EF11746ED84205117Ba0aae08",
+      "adapter": "0x2cefA685258bc6E355087EadA905C9Fba4Ee2444",
+      "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+      "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+      "gauge": null,
+      "tx_adapter": "72e0aa465aec4506e60a854de454f67feefc0036e13990059c2808d4304ce11f",
+      "tx_vault": "937af4e4f457c4dacea4d40b64fe5329ef8553d90b26a388bf55c26a94ead05e"
     },
     {
-      "ts": "2025-10-14T01:54:07.259656",
+      "ts": "2025-10-14T18:08:17.667442",
       "mode": "deposit",
-      "token": "0x4200000000000000000000000000000000000006",
-      "amount_human": 0.5,
-      "tx": "01d61de9f201a52904719efe6b687e77d0c2f969f9771f3025405f45d82a6621"
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 5.0,
+      "tx": "e49353650323a9ab94a5be4f829bec8e5fad2153e33894f5618b801cb5172140"
+    },
+    {
+      "ts": "2025-10-14T18:08:37.381908",
+      "mode": "open",
+      "lower": 182000,
+      "upper": 183000,
+      "tx": "09273d42ad604420d33dd57987d09d6530b30bca40f1e7360ab4d42bdc9e9759"
+    },
+    {
+      "ts": "2025-10-14T18:19:16.604347",
+      "mode": "baseline_set",
+      "baseline_usd": 0.0,
+      "tx": null
+    },
+    {
+      "ts": "2025-10-14T18:19:37.512685",
+      "mode": "deposit",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 5.0,
+      "tx": "c8c7153942c3f67d4e96d20e858d267f4c6e8289161c9cc0f62095525fdbb3b6"
+    },
+    {
+      "ts": "2025-10-14T18:19:57.014765",
+      "mode": "baseline_set",
+      "baseline_usd": 5.0,
+      "tx": null
     }
   ],
   "collect_history": [],
   "deposit_history": [
     {
-      "ts": "2025-10-14T01:54:07.259310",
-      "token": "0x4200000000000000000000000000000000000006",
-      "amount_human": 0.5,
-      "amount_raw": 500000000000000000,
-      "tx": "01d61de9f201a52904719efe6b687e77d0c2f969f9771f3025405f45d82a6621"
+      "ts": "2025-10-14T18:08:17.667018",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 5.0,
+      "amount_raw": 5000000,
+      "tx": "e49353650323a9ab94a5be4f829bec8e5fad2153e33894f5618b801cb5172140"
+    },
+    {
+      "ts": "2025-10-14T18:19:37.512133",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 5.0,
+      "amount_raw": 5000000,
+      "tx": "c8c7153942c3f67d4e96d20e858d267f4c6e8289161c9cc0f62095525fdbb3b6"
     }
   ],
-  "vault_initial_usd": 0.5
+  "error_history": [],
+  "vault_initial_usd": 5.0,
+  "baseline_set_ts": "2025-10-14T18:19:57.014457"
 }

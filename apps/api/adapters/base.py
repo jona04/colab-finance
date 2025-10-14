@@ -90,3 +90,29 @@ class DexAdapter(ABC):
         """If deployment is performed via a factory, implement here.
         Otherwise return NotImplementedError and keep route disabled."""
         ...
+
+    def vault_constraints(self):
+        """Return optional constraints if the vault implements them."""
+        out = {}
+        try: out["twapOk"] = bool(self.vault.functions.twapOk().call())
+        except: pass
+        try: out["minWidth"] = int(self.vault.functions.minWidth().call())
+        except: pass
+        try: out["maxWidth"] = int(self.vault.functions.maxWidth().call())
+        except: pass
+        try: out["minCooldown"] = int(self.vault.functions.minCooldown().call())
+        except: pass
+        try: out["lastRebalance"] = int(self.vault.functions.lastRebalance().call())
+        except: pass
+        try: out["owner"] = self.vault.functions.owner().call()
+        except: pass
+        try: out["tickSpacing"] = int(self.pool_contract().functions.tickSpacing().call())
+        except: pass
+        return out
+    
+    def vault_idle_balances(self):
+        meta = self.pool_meta()
+        e0 = self.erc20(meta["token0"]); e1 = self.erc20(meta["token1"])
+        b0 = int(e0.functions.balanceOf(self.vault.address).call())
+        b1 = int(e1.functions.balanceOf(self.vault.address).call())
+        return b0, b1, meta

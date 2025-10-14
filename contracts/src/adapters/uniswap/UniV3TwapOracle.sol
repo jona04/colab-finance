@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import { IUniV3PoolMinimal } from "../interfaces/IUniV3PoolMinimal.sol";
+import { IUniV3PoolMinimal } from "../../interfaces/IUniV3PoolMinimal.sol";
 
 /// @title Uniswap V3 TWAP helper
 /// @notice Encapsula o cálculo de TWAP usando `observe`.

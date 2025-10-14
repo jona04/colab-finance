@@ -32,6 +32,9 @@ class TxService:
             tx["gasPrice"] = self.w3.eth.gas_price
         return tx
 
+    def sender_address(self) -> str:
+        return self.account.address
+    
     def send(self, fn: ContractFunction, gas: Optional[int]=None, value: int=0, wait: bool=False) -> str:
         tx = fn.build_transaction({**self._base_tx(), "value": value})
         if gas: tx["gas"] = gas

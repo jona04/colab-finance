@@ -15,7 +15,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 // Local TWAP helper
-import { UniV3TwapOracle } from "../adapters/UniV3TwapOracle.sol";
+import { UniV3TwapOracle } from "../adapters/uniswap/UniV3TwapOracle.sol";
 
 /// @title SingleUserVault (Uniswap V3)
 /// @notice Single-owner vault that manages a single Uniswap V3 position. Pool is locked once set.

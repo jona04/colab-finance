@@ -101,20 +101,48 @@ class UniswapV3Adapter(DexAdapter):
         return {"token0": t0, "token1": t1, "spacing": spacing, "sym0": sym0, "sym1": sym1, "dec0": dec0, "dec1": dec1}
 
     def vault_state(self) -> Dict[str, Any]:
-        pc = self.pool_contract()
-        token_id = int(self.vault.functions.positionTokenId().call())
+        try:
+            pool_addr = self.vault.functions.pool().call()
+        except Exception:
+            pool_addr = Web3.to_checksum_address(self.pool)
+        
+        token_id = 0
+        try:
+            token_id = int(self.vault.functions.positionTokenId().call())
+        except Exception:
+            try:
+                token_id = int(self.vault.functions.positionTokenIdView().call())
+            except Exception:
+                token_id = 0
+        
+        lower = upper = 0
+        liq = 0
         try:
             lower, upper, liq = self.vault.functions.currentRange().call()
             lower, upper, liq = int(lower), int(upper), int(liq)
         except Exception:
             _, spot_tick = self.slot0()
-            lower = upper = int(spot_tick); liq = 0
+            lower = upper = int(spot_tick)
+            liq = 0
+            
+        try:
+            twap_ok = bool(self.vault.functions.twapOk().call())
+        except Exception:
+            twap_ok = True  # neutro para UI
+
+        try:
+            last_reb = int(self.vault.functions.lastRebalance().call())
+        except Exception:
+            last_reb = 0
+
         return {
-            "pool": self.vault.functions.pool().call(),
+            "pool": pool_addr,
             "tokenId": token_id,
-            "lower": lower, "upper": upper, "liq": liq,
-            "twapOk": bool(self.vault.functions.twapOk().call()),
-            "lastRebalance": int(self.vault.functions.lastRebalance().call()),
+            "lower": lower,
+            "upper": upper,
+            "liq": liq,
+            "twapOk": twap_ok,
+            "lastRebalance": last_reb,
         }
 
     def amounts_in_position_now(self, lower: int, upper: int, liq: int) -> Tuple[int,int]:

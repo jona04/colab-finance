@@ -46,20 +46,24 @@ def ensure_state_initialized(
     dex: str,
     alias: str,
     *,
-    vault_address: Optional[str] = None,
+    vault_address: str,
     nfpm: Optional[str] = None,
-    pool: Optional[str] = None
+    pool: Optional[str] = None,
+    gauge: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Ensure a minimal state document exists.
     Returns the up-to-date state.
     """
     st = load_state(dex, alias)
+    changed = False
     if not st:
         st = {
             "vault_address": vault_address,
             "nfpm": nfpm,
             "pool": pool,
+            "gauge": gauge,
             "created_at": datetime.utcnow().isoformat(),
             "positions": [],
             # running totals and histories
@@ -69,15 +73,34 @@ def ensure_state_initialized(
             "collect_history": [],
             "deposit_history": [],
         }
-        save_state(dex, alias, st)
+        changed = True
     else:
-        # fill fields if missing
-        if vault_address and not st.get("vault_address"):
-            st["vault_address"] = vault_address
-        if nfpm and not st.get("nfpm"):
-            st["nfpm"] = nfpm
-        if pool and not st.get("pool"):
-            st["pool"] = pool
+        # garante chaves importantes existirem (idempotente)
+        if "vault_address" not in st:
+            st["vault_address"] = vault_address; changed = True
+        if "nfpm" not in st and nfpm is not None:
+            st["nfpm"] = nfpm; changed = True
+        if "pool" not in st and pool is not None:
+            st["pool"] = pool; changed = True
+        if "gauge" not in st and gauge is not None:
+            st["gauge"] = gauge; changed = True
+        if "positions" not in st:
+            st["positions"] = []; changed = True
+        if "fees_collected_cum" not in st:
+            st["fees_collected_cum"] = {"token0_raw": 0, "token1_raw": 0}; changed = True
+        if "exec_history" not in st:
+            st["exec_history"] = []; changed = True
+        if "error_history" not in st:
+            st["error_history"] = []; changed = True
+            
+    if extra:
+        # merge raso, sem sobrescrever se já houver chave
+        for k, v in extra.items():
+            if k not in st:
+                st[k] = v
+                changed = True
+
+    if changed:
         save_state(dex, alias, st)
     return st
 

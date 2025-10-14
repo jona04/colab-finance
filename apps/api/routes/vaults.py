@@ -103,9 +103,40 @@ def open_position(dex: str, alias: str, req: OpenRequest):
     if not v: raise HTTPException(404, "Unknown alias")
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
 
-    state_repo.ensure_state_initialized(dex, alias)
+    state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
     
+    cons = ad.vault_constraints()
+    b0, b1, meta = ad.vault_idle_balances()
+    width = int(req.lower) - int(req.upper) if int(req.lower) > int(req.upper) else int(req.upper) - int(req.lower)
+
+    # 1) owner
+    from_addr = TxService(v.get("rpc_url")).sender_address()
+    if cons.get("owner") and from_addr and cons["owner"].lower() != from_addr.lower():
+        raise HTTPException(400, f"Sender is not vault owner. owner={cons['owner']} sender={from_addr}")
+
+    # 2) twap/cooldown
+    if cons.get("twapOk") is False:
+        raise HTTPException(400, "TWAP guard not satisfied (twapOk=false).")
+    if cons.get("minCooldown") and cons.get("lastRebalance"):
+        import time
+        if time.time() < cons["lastRebalance"] + cons["minCooldown"]:
+            raise HTTPException(400, "Cooldown not finished yet (minCooldown).")
+
+    # 3) width vs spacing/min/max
+    spacing = cons.get("tickSpacing") or meta["spacing"]
+    if req.lower % spacing != 0 or req.upper % spacing != 0:
+        raise HTTPException(400, f"Ticks must be multiples of spacing={spacing}.")
+    if cons.get("minWidth") and width < cons["minWidth"]:
+        raise HTTPException(400, f"Width too small: {width} < minWidth={cons['minWidth']}.")
+    if cons.get("maxWidth") and width > cons["maxWidth"]:
+        raise HTTPException(400, f"Width too large: {width} > maxWidth={cons['maxWidth']}.")
+
+    # 4) saldos
+    if b0 == 0 and b1 == 0:
+        raise HTTPException(400, "Vault has no idle balances to mint liquidity (both token balances are zero).")
+
+
     fn = ad.fn_open(req.lower, req.upper)
     txh = TxService(v.get("rpc_url")).send(fn)
     
@@ -220,7 +251,7 @@ def deposit(dex: str, alias: str, req: DepositRequest):
     if not v: raise HTTPException(404, "Unknown alias")
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
     
-    state_repo.ensure_state_initialized(dex, alias)
+    state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
 
     tok = Web3.to_checksum_address(req.token)
@@ -248,12 +279,13 @@ def deposit(dex: str, alias: str, req: DepositRequest):
 
 @router.post("/vaults/{dex}/{alias}/baseline")
 def baseline(dex: str, alias: str, req: BaselineRequest):
-    state_repo.ensure_state_initialized(dex, alias)
-    st = state_repo.load_state(dex, alias)
-    
     if req.action == "set":
         # recompute USD using status to keep one source of truth
         v = vault_repo.get_vault(dex, alias)
+
+        state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
+        st = state_repo.load_state(dex, alias)
+    
         if not v or not v.get("pool"):
             raise HTTPException(400, "Vault has no pool set")
         ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
@@ -277,134 +309,145 @@ def baseline(dex: str, alias: str, req: BaselineRequest):
 @router.post("/vaults/{dex}/deploy")
 def deploy_vault(dex: str, req: DeployVaultRequest):
     """
-    Two modes:
-      A) Factory mode (preferred): set VAULT_FACTORY_ADDRESS in .env, we call factory.create(nfpm).
-      B) Artifact mode: load ABI+bytecode from contracts/out/SingleUserVault.sol/SingleUserVault.json and deploy.
-         - Assumes constructor args: (nfpm) by default.
-         - You can override by supplying ?args=["0xNFPM","0xOwner"] via query/body in a custom model,
-           or adapt below if your constructor differs.
-    After deployment, optionally set pool in registry and select active.
+    Deploy flow (artifact mode, default):
+      1) Deploy the DEX-specific on-chain Adapter
+      2) Deploy SingleUserVaultV2(owner)
+      3) vault.setPoolOnce(adapter)
+      4) Save registry/state
+    Back-compat: if req.version == "v1", keep the old artifact path & constructor.
     """
     s = get_settings()
     rpc = req.rpc_url or s.RPC_URL_DEFAULT
     txs = TxService(rpc)
+    w3 = txs.w3
 
-    factory_addr = Web3.to_checksum_address(os.environ.get("VAULT_FACTORY_ADDRESS", "")) if os.environ.get("VAULT_FACTORY_ADDRESS") else None
+    # -------- owner/source account --------
+    owner = Web3.to_checksum_address(req.owner) if req.owner else txs.sender_address()
 
-    # --- MODE A: Factory (if present) ---
-    if factory_addr:
-        # Example minimal factory ABI:
-        factory_abi = json.loads(os.environ.get("VAULT_FACTORY_ABI_JSON", "[]"))
-        if not factory_abi:
-            # fallback minimal ABI signature:
-            factory_abi = [
-                {"name":"create","type":"function","stateMutability":"nonpayable",
-                 "inputs":[{"name":"nfpm","type":"address"}],"outputs":[{"name":"vault","type":"address"}]},
-                {"name":"setPoolOnce","type":"function","stateMutability":"nonpayable",
-                 "inputs":[{"name":"vault","type":"address"},{"name":"pool","type":"address"}],"outputs":[]}
-            ]
-        w3 = txs.w3
-        factory = w3.eth.contract(address=factory_addr, abi=factory_abi)
-        # create vault
-        fn = factory.functions.create(Web3.to_checksum_address(req.nfpm))
-        txh = txs.send(fn, wait=True)
-
-        # try to get deployed address from logs/return (depends on factory)
-        # if factory returns address (staticcall) we need logs; for simplicity, require UI to pass it or factory to emit event.
-        # As a practical approach, add an event VaultCreated(address vault) and parse here.
-        # For now, ask user to provide the new address OR have factory expose a view to list last.
-        # We'll try a naive approach: call(view) lastCreated() if abi has it.
-        vault_addr = None
-        try:
-            if hasattr(factory.functions, "lastCreated"):
-                vault_addr = factory.functions.lastCreated().call()
-        except Exception:
-            pass
-        if not vault_addr:
-            raise HTTPException(500, "Deployed, but could not resolve vault address from factory. Add an event/view or return value.")
-
-        # setPoolOnce if provided
-        if req.pool:
-            try:
-                fn_set = factory.functions.setPoolOnce(Web3.to_checksum_address(vault_addr), Web3.to_checksum_address(req.pool))
-                txs.send(fn_set, wait=True)
-            except Exception:
-                # ignore if factory doesn't support this helper; user can set via a script if needed
-                pass
-
-        # registry
-        vault_repo.add_vault(dex, req.alias, {
-            "address": vault_addr, "pool": req.pool, "nfpm": req.nfpm, "rpc_url": req.rpc_url
-        })
-        state_repo.ensure_state_initialized(dex, req.alias, vault_address=vault_addr, nfpm=req.nfpm, pool=req.pool)
-        vault_repo.set_active(dex, req.alias)
-        
-        state_repo.append_history(dex, req.alias, "exec_history", {
-            "ts": datetime.utcnow().isoformat(),
-            "mode": "deploy_vault",
-            "vault": vault_addr,
-            "pool": req.pool,
-            "nfpm": req.nfpm,
-            "tx": txh
-        })
-        
-        return {"tx": txh, "address": vault_addr, "alias": req.alias, "dex": dex}
-
-    # --- MODE B: Artifact deploy ---
-    # Foundry artifact default path
-    artifact_path = Path("contracts/out/SingleUserVault.sol/SingleUserVault.json")
-    if not artifact_path.exists():
-        raise HTTPException(501, "Artifact not found. Provide VAULT_FACTORY or ship contracts/out/SingleUserVault.sol/SingleUserVault.json")
-
-    art = json.loads(artifact_path.read_text(encoding="utf-8"))
-    abi = art.get("abi")
-    
-    bytecode = art.get("bytecode")
-    if isinstance(bytecode, dict):
-        bytecode = bytecode.get("object")
-
-    if not bytecode:
-        # tenta deployedBytecode também
-        bytecode = art.get("deployedBytecode")
-        if isinstance(bytecode, dict):
-            bytecode = bytecode.get("object")
-
-    if not abi or not bytecode:
-        raise HTTPException(500, "Invalid artifact (missing abi/bytecode)")
-
-    # constructor args — default assumes (address nfpm). Adjust if yours differs.
-    ctor_args = [Web3.to_checksum_address(req.nfpm)]
-
-    res = txs.deploy(abi=abi, bytecode=bytecode, ctor_args=ctor_args, wait=True)
-    vault_addr = res["address"]
-
-    # Optionally call setPoolOnce on the new vault if available
-    if req.pool:
-        w3 = txs.w3
+    # -------- V1 BACK-COMPAT (opcional) --------
+    if req.version == "v1":
+        # seu bloco V1 atual (SingleUserVault.sol com ctor(nfpm))
+        artifact_path = Path("contracts/out/SingleUserVault.sol/SingleUserVault.json")
+        if not artifact_path.exists():
+            raise HTTPException(501, "V1 artifact not found")
+        art = json.loads(artifact_path.read_text())
+        abi = art["abi"]; bytecode = art["bytecode"]["object"] if isinstance(art["bytecode"], dict) else art["bytecode"]
+        res = txs.deploy(abi=abi, bytecode=bytecode, ctor_args=[Web3.to_checksum_address(req.nfpm)], wait=True)
+        vault_addr = res["address"]
+        # setPoolOnce(pool) se existir
         vault = w3.eth.contract(address=Web3.to_checksum_address(vault_addr), abi=abi)
         try:
             if hasattr(vault.functions, "setPoolOnce"):
                 txs.send(vault.functions.setPoolOnce(Web3.to_checksum_address(req.pool)), wait=True)
         except Exception:
-            # ignore if your vault uses another initializer; user can set via another route/tx
             pass
 
-    # registry
+        # registry/state
+        vault_repo.add_vault(dex, req.alias, {
+            "address": vault_addr,
+            "adapter": None,
+            "pool": req.pool, "nfpm": req.nfpm, "gauge": req.gauge,
+            "rpc_url": req.rpc_url, "version": "v1"
+        })
+        state_repo.ensure_state_initialized(dex, req.alias,
+            vault_address=vault_addr, nfpm=req.nfpm, pool=req.pool, gauge=req.gauge, adapter=None)
+        vault_repo.set_active(dex, req.alias)
+        state_repo.append_history(dex, req.alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(), "mode": "deploy_vault_v1",
+            "vault": vault_addr, "pool": req.pool, "nfpm": req.nfpm, "tx": res["tx"]
+        })
+        return {"tx": res["tx"], "address": vault_addr, "alias": req.alias, "dex": dex, "version": "v1"}
+
+    # -------- V2 (default) --------
+    # 1) Deploy adapter conforme DEX
+    if dex == "uniswap":
+        adapter_art_path = Path("contracts/out/UniV3Adapter.sol/UniV3Adapter.json")
+        if not adapter_art_path.exists():
+            raise HTTPException(501, "Adapter artifact (Uniswap) not found")
+        aart = json.loads(adapter_art_path.read_text())
+        aabi = aart["abi"]; abyte = aart["bytecode"]["object"] if isinstance(aart["bytecode"], dict) else aart["bytecode"]
+        # ctor(nfpm, pool) OU seu construtor atual (ajuste conforme o seu adapter .sol)
+        adapter_res = txs.deploy(
+            abi=aabi, bytecode=abyte,
+            ctor_args=[Web3.to_checksum_address(req.nfpm), Web3.to_checksum_address(req.pool)],
+            wait=True
+        )
+        adapter_addr = adapter_res["address"]
+
+    elif dex == "aerodrome":
+        adapter_art_path = Path("contracts/out/SlipstreamAdapter.sol/SlipstreamAdapter.json")
+        if not adapter_art_path.exists():
+            raise HTTPException(501, "Adapter artifact (Aerodrome) not found")
+        aart = json.loads(adapter_art_path.read_text())
+        aabi = aart["abi"]; abyte = aart["bytecode"]["object"] if isinstance(aart["bytecode"], dict) else aart["bytecode"]
+        # ctor(nfpm, pool, gauge?) — ajuste exatamente ao seu SlipstreamAdapter.sol
+        ctor = [Web3.to_checksum_address(req.nfpm), Web3.to_checksum_address(req.pool)]
+        if req.gauge:
+            ctor.append(Web3.to_checksum_address(req.gauge))
+        adapter_res = txs.deploy(abi=aabi, bytecode=abyte, ctor_args=ctor, wait=True)
+        adapter_addr = adapter_res["address"]
+
+    else:
+        raise HTTPException(400, "Unsupported dex for V2")
+
+    # 2) Deploy SingleUserVaultV2(owner)
+    v2_path = Path("contracts/out/SingleUserVaultV2.sol/SingleUserVaultV2.json")
+    if not v2_path.exists():
+        raise HTTPException(501, "Vault V2 artifact not found")
+    vart = json.loads(v2_path.read_text())
+    vabi = vart["abi"]; vbyte = vart["bytecode"]["object"] if isinstance(vart["bytecode"], dict) else vart["bytecode"]
+
+    vres = txs.deploy(abi=vabi, bytecode=vbyte, ctor_args=[owner], wait=True)
+    vault_addr = vres["address"]
+    vault = w3.eth.contract(address=Web3.to_checksum_address(vault_addr), abi=vabi)
+
+    # 3) setPoolOnce(adapter)
+    try:
+        txs.send(vault.functions.setPoolOnce(Web3.to_checksum_address(adapter_addr)), wait=True)
+    except Exception as e:
+        raise HTTPException(500, f"setPoolOnce failed: {e}")
+
+    # 4) registry/state
     vault_repo.add_vault(dex, req.alias, {
-        "address": vault_addr, "pool": req.pool, "nfpm": req.nfpm, "rpc_url": req.rpc_url
+        "address": vault_addr,
+        "adapter": adapter_addr,
+        "pool": req.pool,
+        "nfpm": req.nfpm,
+        "gauge": req.gauge,
+        "rpc_url": req.rpc_url,
+        "version": "v2"
     })
-    state_repo.ensure_state_initialized(dex, req.alias, vault_address=vault_addr, nfpm=req.nfpm, pool=req.pool)
+    state_repo.ensure_state_initialized(
+        dex, req.alias,
+        vault_address=vault_addr,
+        nfpm=req.nfpm,
+        pool=req.pool,
+        gauge=req.gauge
+    )
     vault_repo.set_active(dex, req.alias)
 
     state_repo.append_history(dex, req.alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
-        "mode": "deploy_vault",
+        "mode": "deploy_vault_v2",
         "vault": vault_addr,
+        "adapter": adapter_addr,
         "pool": req.pool,
         "nfpm": req.nfpm,
-        "tx": res["tx"]
+        "gauge": req.gauge,
+        "tx_adapter": adapter_res["tx"],
+        "tx_vault": vres["tx"]
     })
-    return {"tx": res["tx"], "address": vault_addr, "alias": req.alias, "dex": dex}
+
+    return {
+        "tx_vault": vres["tx"],
+        "tx_adapter": adapter_res["tx"],
+        "vault": vault_addr,
+        "adapter": adapter_addr,
+        "alias": req.alias,
+        "dex": dex,
+        "version": "v2",
+        "owner": owner
+    }
 
 @router.post("/vaults/{dex}/{alias}/stake")
 def stake_nft(dex: str, alias: str, req: StakeRequest):
