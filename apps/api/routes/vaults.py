@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from web3 import Web3
 from ..config import get_settings
 from ..domain.models import (
@@ -15,6 +15,7 @@ from ..services.tx_service import TxService
 from ..services.chain_reader import compute_status
 from ..adapters.uniswap_v3 import UniswapV3Adapter
 from ..adapters.aerodrome import AerodromeAdapter
+from ..domain.models import StakeRequest, UnstakeRequest, ClaimRewardsRequest
 
 router = APIRouter()
 
@@ -80,7 +81,15 @@ def status(dex: str, alias: str):
     if not v.get("pool"):
         raise HTTPException(400, "Vault has no pool set")
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
-    st = compute_status(ad, dex, alias)
+
+    # nova validação (somente aerodrome)
+    if dex == "aerodrome":
+        try:
+            ad.assert_is_pool()
+        except Exception as e:
+            raise HTTPException(400, f"Invalid Slipstream pool address: {e}")
+
+    st = compute_status(ad, dex, alias)   # note: compute_status já aceita qualquer DexAdapter
     return {
         "alias": alias,
         "vault": v["address"],
@@ -396,3 +405,77 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
         "tx": res["tx"]
     })
     return {"tx": res["tx"], "address": vault_addr, "alias": req.alias, "dex": dex}
+
+@router.post("/vaults/{dex}/{alias}/stake")
+def stake_nft(dex: str, alias: str, req: StakeRequest):
+    v = vault_repo.get_vault(dex, alias)
+    if not v: raise HTTPException(404, "Unknown alias")
+    if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
+
+    ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    # opcional: deixar por config; ou se salvou no registry, passe via extra:
+    # ad.extra = {"voter": v.get("voter")}  # se você salvar no vault_repo
+
+    token_id = int(req.token_id or ad.vault.functions.positionTokenId().call())
+    if token_id == 0:
+        raise HTTPException(400, "No active position tokenId")
+
+    txh = TxService(v.get("rpc_url")).send(ad.fn_stake_nft(token_id))
+    state_repo.append_history(dex, alias, "exec_history", {
+        "ts": datetime.utcnow().isoformat(),
+        "mode": "stake_gauge",
+        "tokenId": token_id,
+        "tx": txh
+    })
+    return {"tx": txh, "tokenId": token_id}
+
+
+@router.post("/vaults/{dex}/{alias}/unstake")
+def unstake_nft(dex: str, alias: str, req: UnstakeRequest):
+    v = vault_repo.get_vault(dex, alias)
+    if not v: raise HTTPException(404, "Unknown alias")
+    if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
+
+    ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    token_id = int(req.token_id or ad.vault.functions.positionTokenId().call())
+    if token_id == 0:
+        raise HTTPException(400, "No active position tokenId")
+
+    txh = TxService(v.get("rpc_url")).send(ad.fn_unstake_nft(token_id))
+    state_repo.append_history(dex, alias, "exec_history", {
+        "ts": datetime.utcnow().isoformat(),
+        "mode": "unstake_gauge",
+        "tokenId": token_id,
+        "tx": txh
+    })
+    return {"tx": txh, "tokenId": token_id}
+
+@router.post("/vaults/{dex}/{alias}/claim")
+def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
+    v = vault_repo.get_vault(dex, alias)
+    if not v: raise HTTPException(404, "Unknown alias")
+    if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
+
+    ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+
+    if req.mode == "account":
+        if not req.account:
+            raise HTTPException(400, "account is required when mode='account'")
+        fn = ad.fn_claim_rewards_by_account(req.account)
+    else:
+        # default: via tokenId
+        token_id = int(req.token_id or ad.vault.functions.positionTokenId().call())
+        if token_id == 0:
+            raise HTTPException(400, "No active position tokenId")
+        fn = ad.fn_claim_rewards_by_token(token_id)
+
+    txh = TxService(v.get("rpc_url")).send(fn)
+    state_repo.append_history(dex, alias, "exec_history", {
+        "ts": datetime.utcnow().isoformat(),
+        "mode": "claim_rewards",
+        "by": req.mode,
+        "tokenId": req.token_id,
+        "account": req.account,
+        "tx": txh
+    })
+    return {"tx": txh, "mode": req.mode}

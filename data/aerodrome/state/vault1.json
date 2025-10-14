@@ -1,0 +1,40 @@
+{
+  "vault_address": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
+  "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+  "pool": "0xdbc6998296caA1652A810dc8D3BaF4A8294330f1",
+  "created_at": "2025-10-14T01:43:23.639130",
+  "positions": [],
+  "fees_collected_cum": {
+    "token0_raw": 0,
+    "token1_raw": 0
+  },
+  "fees_cum_usd": 0.0,
+  "exec_history": [
+    {
+      "ts": "2025-10-14T01:43:23.639482",
+      "mode": "deploy_vault",
+      "vault": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
+      "pool": "0xdbc6998296caA1652A810dc8D3BaF4A8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "tx": "f63cf717ab1e278e53c14226b1c822199bfbeacd27e1d8b12cd05fb589cf9015"
+    },
+    {
+      "ts": "2025-10-14T01:54:07.259656",
+      "mode": "deposit",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.5,
+      "tx": "01d61de9f201a52904719efe6b687e77d0c2f969f9771f3025405f45d82a6621"
+    }
+  ],
+  "collect_history": [],
+  "deposit_history": [
+    {
+      "ts": "2025-10-14T01:54:07.259310",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.5,
+      "amount_raw": 500000000000000000,
+      "tx": "01d61de9f201a52904719efe6b687e77d0c2f969f9771f3025405f45d82a6621"
+    }
+  ],
+  "vault_initial_usd": 2110.947221390311
+}

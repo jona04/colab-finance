@@ -1,0 +1,17 @@
+{
+  "active": "vault1",
+  "vaults": {
+    "vault4": {
+      "address": "0x3F6825EF3bAa4f7ff95829cc991A696b3c8DAD2f",
+      "pool": "0xdbc6998296caA1652A810dc8D3BaF4A8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "rpc_url": "http://127.0.0.1:8545"
+    },
+    "vault1": {
+      "address": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
+      "pool": "0xdbc6998296caA1652A810dc8D3BaF4A8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "rpc_url": "http://127.0.0.1:8545"
+    }
+  }
+}

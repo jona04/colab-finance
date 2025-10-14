@@ -26,6 +26,8 @@ class Settings:
     ENV: str = Field(default="dev")
     LOG_LEVEL: str = Field(default="INFO")
     
+    AERODROME_VOTER: str = "0x16613524e02ad97eDfeF371bC883F2F5d6C480A5"  # Base mainnet
+    
 @lru_cache()
 def get_settings() -> Settings:
     return Settings(

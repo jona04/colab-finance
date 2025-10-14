@@ -85,7 +85,7 @@ class DexAdapter(ABC):
         """Simple ERC20 transfer to vault or vault.deposit(token,amount) if available."""
         ...
 
-    @abstractmethod
+    # @abstractmethod
     def fn_deploy_vault(self, nfpm: str):
         """If deployment is performed via a factory, implement here.
         Otherwise return NotImplementedError and keep route disabled."""

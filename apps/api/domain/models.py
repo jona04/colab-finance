@@ -77,3 +77,21 @@ class StatusResponse(BaseModel):
     pct_outside_tick: float
     usd_panel: Dict[str, float]
     range_side: Literal["inside", "below", "above"]
+
+class StakeRequest(BaseModel):
+    """Stake the current or a specific position tokenId into the gauge."""
+    token_id: Optional[int] = Field(default=None, description="If omitted, uses vault.positionTokenId()")
+
+class UnstakeRequest(BaseModel):
+    """Unstake a specific (or the current) position tokenId from the gauge."""
+    token_id: Optional[int] = Field(default=None, description="If omitted, uses vault.positionTokenId()")
+
+class ClaimRewardsRequest(BaseModel):
+    """
+    Claim gauge rewards.
+    mode='tokenId' will call getReward(tokenId) (default). 
+    mode='account' will call getReward(account).
+    """
+    mode: Literal["tokenId", "account"] = "tokenId"
+    token_id: Optional[int] = None
+    account: Optional[str] = None
