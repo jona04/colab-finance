@@ -1,5 +1,5 @@
 {
-  "active": "vault2",
+  "active": "vault5",
   "vaults": {
     "vault1": {
       "address": "0x7435DcB29bF9219EF11746ED84205117Ba0aae08",
@@ -13,6 +13,33 @@
     "vault2": {
       "address": "0x288dE3e5292a1bBeb815575Fe43ea1A0c4f48F88",
       "adapter": "0x9F1B3D01d88B85dAa77bB0C209E4AeFE8E00dd06",
+      "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+      "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+      "gauge": null,
+      "rpc_url": "https://ethereum-sepolia-rpc.publicnode.com",
+      "version": "v2"
+    },
+    "vault3": {
+      "address": "0x5933448B3a4Aff1bd415E721017D3379F5927A80",
+      "adapter": "0xA11e5cE31119B0C11520c5F514623569ED91b76f",
+      "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+      "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+      "gauge": null,
+      "rpc_url": "https://ethereum-sepolia-rpc.publicnode.com",
+      "version": "v2"
+    },
+    "vault4": {
+      "address": "0x27e2011BD6Efa5a7fBdE6222285CC1a391dD9E76",
+      "adapter": "0x433D52334aB55C451883F1cEb7392a06DcC646fc",
+      "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+      "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+      "gauge": null,
+      "rpc_url": "https://ethereum-sepolia-rpc.publicnode.com",
+      "version": "v2"
+    },
+    "vault5": {
+      "address": "0x85e928E3377fc403Fb1335b48a86a8Adb3d80863",
+      "adapter": "0x8C18A543878E0b4aABB0Ab6623f9DFD2856A2F05",
       "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
       "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
       "gauge": null,

@@ -44,6 +44,10 @@ ABI_NFPM = [
 # minimal vault ABI (adapt names if your contract differs)
 ABI_VAULT = [
     {"name":"pool","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"nfpm","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"gauge","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"adapter","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"positionTokenIdView","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"positionTokenId","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"currentRange","outputs":[{"type":"int24"},{"type":"int24"},{"type":"uint128"}],
      "inputs":[],"stateMutability":"view","type":"function"},
@@ -60,6 +64,18 @@ ABI_VAULT = [
     {"name":"exitPositionToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
     {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
     {"name":"collectToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
+]
+
+# ABI mínimo do adapter (universal p/ Uni e Aerodrome)
+ABI_ADAPTER = [
+    {"name":"tokens","outputs":[{"type":"address"},{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"currentTokenId","outputs":[{"type":"uint256"}],"inputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
+    {"name":"currentRange","outputs":[{"type":"int24"},{"type":"int24"},{"type":"uint128"}],"inputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
+    {"name":"lastRebalance","outputs":[{"type":"uint256"}],"inputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
+    {"name":"twapOk","outputs":[{"type":"bool"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"pool","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"nfpm","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"gauge","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
 ]
 
 U128_MAX = (1<<128) - 1
@@ -101,40 +117,53 @@ class UniswapV3Adapter(DexAdapter):
         return {"token0": t0, "token1": t1, "spacing": spacing, "sym0": sym0, "sym1": sym1, "dec0": dec0, "dec1": dec1}
 
     def vault_state(self) -> Dict[str, Any]:
+        # 1) tentar achar o adapter no vault (V2)
+        adapter_addr = None
         try:
-            pool_addr = self.vault.functions.pool().call()
+            # tentar ABI V2
+            v2 = self.w3.eth.contract(address=self.vault.address, abi=ABI_VAULT)
+            adapter_addr = v2.functions.adapter().call()
         except Exception:
-            pool_addr = Web3.to_checksum_address(self.pool)
-        
+            adapter_addr = None
+
         token_id = 0
-        try:
-            token_id = int(self.vault.functions.positionTokenId().call())
-        except Exception:
-            try:
-                token_id = int(self.vault.functions.positionTokenIdView().call())
-            except Exception:
-                token_id = 0
-        
         lower = upper = 0
         liq = 0
-        try:
-            lower, upper, liq = self.vault.functions.currentRange().call()
-            lower, upper, liq = int(lower), int(upper), int(liq)
-        except Exception:
-            _, spot_tick = self.slot0()
-            lower = upper = int(spot_tick)
-            liq = 0
+        twap_ok = True
+        last_reb = 0
+        pool_addr = Web3.to_checksum_address(self.pool)
+        
+        if adapter_addr and int(adapter_addr, 16) != 0:
+            ac = self.w3.eth.contract(address=Web3.to_checksum_address(adapter_addr), abi=ABI_ADAPTER)
+            # tokenId (NFT está no adapter)
+            try:
+                token_id = int(ac.functions.currentTokenId(self.vault.address).call())
+            except Exception:
+                token_id = 0
+            # range + liq
+            if token_id != 0:
+                try:
+                    l,u,L = ac.functions.currentRange(self.vault.address).call()
+                    lower, upper, liq = int(l), int(u), int(L)
+                except Exception:
+                    lower = upper = self.slot0()[1]; liq = 0
+            else:
+                lower = upper = self.slot0()[1]; liq = 0
+            # twap e lastRebalance
+            try:
+                twap_ok = bool(ac.functions.twapOk().call())
+            except Exception:
+                twap_ok = True
+            try:
+                last_reb = int(ac.functions.lastRebalance(self.vault.address).call())
+            except Exception:
+                last_reb = 0
+            # pool/nfpm (se quiser sobrepor)
+            try:
+                pool_addr = ac.functions.pool().call()
+            except Exception:
+                pass
             
-        try:
-            twap_ok = bool(self.vault.functions.twapOk().call())
-        except Exception:
-            twap_ok = True  # neutro para UI
-
-        try:
-            last_reb = int(self.vault.functions.lastRebalance().call())
-        except Exception:
-            last_reb = 0
-
         return {
             "pool": pool_addr,
             "tokenId": token_id,
@@ -144,7 +173,7 @@ class UniswapV3Adapter(DexAdapter):
             "twapOk": twap_ok,
             "lastRebalance": last_reb,
         }
-
+            
     def amounts_in_position_now(self, lower: int, upper: int, liq: int) -> Tuple[int,int]:
         sqrtP = self.slot0()[0]
         sqrtA = get_sqrt_ratio_at_tick(lower)
@@ -196,3 +225,4 @@ class UniswapV3Adapter(DexAdapter):
     def fn_deploy_vault(self, nfpm: str):
         # TODO: if you have a factory, implement here
         raise NotImplementedError("Deployment via adapter not implemented (use factory when available).")
+

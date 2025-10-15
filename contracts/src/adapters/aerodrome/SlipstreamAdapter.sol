@@ -17,6 +17,19 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
     address public immutable override nfpm;
     address public immutable override gauge; // optional; can be zero
 
+    // --- guard params (copiados do V1 para manter comportamento) ---
+    uint256 public minCooldown = 30 minutes;
+    int24   public minWidth    = 60;
+    int24   public maxWidth    = 200_000;
+    int24   public maxTwapDeviationTicks = 50; // ~0.5%
+    uint32  public twapWindow  = 60;
+
+    // vault => lastRebalance
+    mapping(address => uint256) public lastRebalance;
+
+    // vault => tokenId (mantemos aqui; o Vault V2 também salva localmente pra exibir)
+    mapping(address => uint256) private _tokenId;
+
     constructor(address _pool, address _nfpm, address _gauge) {
         require(_pool != address(0) && _nfpm != address(0), "zero");
         pool = _pool;
@@ -46,6 +59,18 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         if (!ok || data.length == 0) return 0;
         return abi.decode(data, (uint256));
     }
+
+    function currentRange(address vault)
+        external
+        view
+        returns (int24 lower, int24 upper, uint128 liquidity)
+    {
+        uint256 tid = _tokenId[vault];
+        require(tid != 0, "no position");
+        ( , , , , , int24 l, int24 u, uint128 L, , , , ) = ISlipstreamNFPM(nfpm).positions(tid);
+        return (l, u, L);
+    }
+
 
     function _approveIfNeeded(address token, address spender, uint256 amount) internal {
         // Minimal ERC20 approve pattern is left out intentionally; vault should pre-approve NFPM if needed.

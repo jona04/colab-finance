@@ -60,6 +60,20 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
         return _tokenId[vault];
     }
 
+    function currentRange(address vault)
+        external
+        view
+        returns (int24 lower, int24 upper, uint128 liquidity)
+    {
+        uint256 tid = _tokenId[vault];
+        require(tid != 0, "no position");
+        ( , , , , , int24 l, int24 u, uint128 L, , , , ) = NFPM(nfpm).positions(tid);
+        return (l, u, L);
+    }
+
+    function twapOk() external view returns (bool) {
+        return _twapOk();
+    }
     // ===== helpers internos =====
 
     function _validateWidth(int24 lower, int24 upper) internal view {

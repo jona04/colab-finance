@@ -156,7 +156,7 @@ def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
     if not v: raise HTTPException(404, "Unknown alias")
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
 
-    state_repo.ensure_state_initialized(dex, alias)
+    state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
     meta = ad.pool_meta()
     # convert human caps -> raw if provided
