@@ -89,13 +89,13 @@ def status(dex: str, alias: str):
         except Exception as e:
             raise HTTPException(400, f"Invalid Slipstream pool address: {e}")
 
-    st = compute_status(ad, dex, alias)   # note: compute_status já aceita qualquer DexAdapter
-    return {
-        "alias": alias,
-        "vault": v["address"],
-        "pool": v.get("pool"),
-        **st
-    }
+    core = compute_status(ad, dex, alias)  # StatusCore
+    return StatusResponse(
+        alias=alias,
+        vault=v["address"],
+        pool=v.get("pool"),
+        **core.model_dump()
+    )
 
 @router.post("/vaults/{dex}/{alias}/open")
 def open_position(dex: str, alias: str, req: OpenRequest):

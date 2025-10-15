@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pydantic import Field
 from functools import lru_cache
 
@@ -26,17 +26,19 @@ class Settings:
     ENV: str = Field(default="dev")
     LOG_LEVEL: str = Field(default="INFO")
     
-    AERODROME_VOTER: str = "0x16613524e02ad97eDfeF371bC883F2F5d6C480A5"  # Base mainnet
+    STABLE_TOKEN_ADDRESSES: list[str] = field(default_factory=list)
     
 @lru_cache()
 def get_settings() -> Settings:
     return Settings(
+        PRIVATE_KEY=os.environ.get("PRIVATE_KEY", ""),  # keep empty when missing
         RPC_URL_DEFAULT=os.environ["RPC_SEPOLIA"],
+        STABLE_TOKEN_ADDRESSES=os.environ["STABLE_TOKEN_ADDRESSES"]
+        
         # twap_window=int(os.environ.get("TWAP_WINDOW", "60")),
         # max_twap_dev_ticks=int(os.environ.get("MAX_TWAP_DEVIATION_TICKS", "50")),
         # min_cooldown=int(os.environ.get("MIN_COOLDOWN", "1800")),
         # check_interval=int(os.environ.get("CHECK_INTERVAL", "30")),
-        PRIVATE_KEY=os.environ.get("PRIVATE_KEY", ""),  # keep empty when missing
 
         # # Security / governance
         # read_only_mode=_bool(os.environ.get("READ_ONLY_MODE")),

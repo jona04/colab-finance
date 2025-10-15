@@ -66,20 +66,81 @@ class BaselineRequest(BaseModel):
     alias: str
     action: Literal["set", "show"] = "show"
 
-class StatusResponse(BaseModel):
-    alias: str
-    vault: str
-    pool: Optional[str]
+
+
+
+
+
+
+
+# Vault status
+
+
+class PricesBlock(BaseModel):
+    tick: int
+    p_t1_t0: float
+    p_t0_t1: float
+    
+class PricesPanel(BaseModel):
+    current: PricesBlock
+    lower: PricesBlock
+    upper: PricesBlock
+
+class UsdPanelModel(BaseModel):
+    usd_value: float
+    delta_usd: float
+    baseline_usd: float
+
+class HoldingsSide(BaseModel):
+    token0: float
+    token1: float
+    usd: float
+
+class HoldingsMeta(BaseModel):
+    token0: int
+    token1: int
+    
+class HoldingsBlock(BaseModel):
+    vault_idle: HoldingsSide
+    in_position: HoldingsSide
+    totals: HoldingsSide
+    decimals: HoldingsMeta
+    symbols: Dict[str, str]     # {"token0": "WETH", "token1": "USDC"}
+    addresses: Dict[str, str]   # {"token0": "0x...", "token1": "0x..."}
+
+class FeesUncollected(BaseModel):
+    token0: float
+    token1: float
+    usd: float
+    sym0: str
+    sym1: str
+    
+class StatusCore(BaseModel):
     tick: int
     lower: int
     upper: int
     spacing: int
-    prices: Dict[str, Any]
-    fees_uncollected: Dict[str, Any]
+    prices: PricesPanel
+    fees_uncollected: FeesUncollected
     out_of_range: bool
     pct_outside_tick: float
-    usd_panel: Dict[str, float]
-    range_side: Literal["inside", "below", "above"]
+    usd_panel: UsdPanelModel
+    range_side: Literal["inside","below","above"]
+    sym0: str
+    sym1: str
+    holdings: HoldingsBlock
+
+# Resposta completa do endpoint
+class StatusResponse(StatusCore):
+    alias: str
+    vault: str
+    pool: str
+
+
+
+
+# Stake
+
 
 class StakeRequest(BaseModel):
     """Stake the current or a specific position tokenId into the gauge."""

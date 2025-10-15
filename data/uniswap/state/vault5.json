@@ -41,6 +41,15 @@
       "mode": "baseline_set",
       "baseline_usd": 1.999999,
       "tx": null
+    },
+    {
+      "ts": "2025-10-15T20:05:13.002864",
+      "mode": "rebalance_caps",
+      "lower": 180200,
+      "upper": 181000,
+      "cap0": null,
+      "cap1": null,
+      "tx": "6713c14d67d0040a0ceb07f93315c30237a4e85ab689793d3deb10b89535f226"
     }
   ],
   "collect_history": [],
