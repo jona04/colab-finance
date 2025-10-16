@@ -120,6 +120,10 @@ class StatusCore(BaseModel):
     lower: int
     upper: int
     spacing: int
+    twap_ok: bool
+    last_rebalance: int
+    cooldown_remaining_seconds: int
+    cooldown_active: bool
     prices: PricesPanel
     fees_uncollected: FeesUncollected
     out_of_range: bool

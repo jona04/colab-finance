@@ -50,6 +50,20 @@
       "cap0": null,
       "cap1": null,
       "tx": "6713c14d67d0040a0ceb07f93315c30237a4e85ab689793d3deb10b89535f226"
+    },
+    {
+      "ts": "2025-10-15T20:52:37.145964",
+      "mode": "deposit",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 100.0,
+      "tx": "f115b1b3d74f24f308dc38f812671fbabd8afaac87d2c2fdd86e0491df794f78"
+    },
+    {
+      "ts": "2025-10-15T20:55:49.585333",
+      "mode": "deposit",
+      "token": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "amount_human": 0.008,
+      "tx": "dbf2ac81a408708afa510546d3e8a002c2965ad3d7563ee3e7c6a9c150c0c4df"
     }
   ],
   "collect_history": [],
@@ -60,6 +74,20 @@
       "amount_human": 2.0,
       "amount_raw": 2000000,
       "tx": "9cae581519756d4f842e761ed554ff8a1458f2e1d62d672d7433b2d554995435"
+    },
+    {
+      "ts": "2025-10-15T20:52:37.145438",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 100.0,
+      "amount_raw": 100000000,
+      "tx": "f115b1b3d74f24f308dc38f812671fbabd8afaac87d2c2fdd86e0491df794f78"
+    },
+    {
+      "ts": "2025-10-15T20:55:49.584805",
+      "token": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "amount_human": 0.008,
+      "amount_raw": 8000000000000000,
+      "tx": "dbf2ac81a408708afa510546d3e8a002c2965ad3d7563ee3e7c6a9c150c0c4df"
     }
   ],
   "error_history": [],

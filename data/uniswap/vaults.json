@@ -1,5 +1,5 @@
 {
-  "active": "vault5",
+  "active": "vault6",
   "vaults": {
     "vault1": {
       "address": "0x7435DcB29bF9219EF11746ED84205117Ba0aae08",
@@ -40,6 +40,15 @@
     "vault5": {
       "address": "0x85e928E3377fc403Fb1335b48a86a8Adb3d80863",
       "adapter": "0x8C18A543878E0b4aABB0Ab6623f9DFD2856A2F05",
+      "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+      "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+      "gauge": null,
+      "rpc_url": "https://ethereum-sepolia-rpc.publicnode.com",
+      "version": "v2"
+    },
+    "vault6": {
+      "address": "0xf083198cf3188447d707Fd0e6B6f570e4231b820",
+      "adapter": "0xF34ae43D9CF685d29fb38bea4E0B8A53a11EAb99",
       "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
       "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
       "gauge": null,

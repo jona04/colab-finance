@@ -7,6 +7,7 @@ High-level read service that builds the "status" panel:
 This reuses the math/flow from your bot.observer.VaultObserver, simplified here.
 """
 
+from time import time
 from dataclasses import dataclass, asdict
 from decimal import Decimal, getcontext
 from typing import Dict, Any, Tuple
@@ -106,6 +107,15 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]
     vstate = adapter.vault_state()
     lower, upper, liq = int(vstate["lower"]), int(vstate["upper"]), int(vstate["liq"])
 
+    twap_ok = bool(vstate.get("twapOk", True))
+    last_rebalance = int(vstate.get("lastRebalance", 0))
+    min_cd = int(vstate.get("min_cd", 0))
+
+    now = adapter.w3.eth.get_block("latest").timestamp
+    
+    cooldown_remaining_seconds = int(last_rebalance + min_cd - now)
+    cooldown_active = cooldown_remaining_seconds > 0
+
     # prices
     p_t1_t0 = _sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)  # token1 per token0
     p_t0_t1 = (0.0 if p_t1_t0 == 0 else 1.0 / p_t1_t0)
@@ -191,6 +201,10 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]
         lower=lower,
         upper=upper,
         spacing=spacing,
+        twap_ok=twap_ok,
+        last_rebalance=last_rebalance,
+        cooldown_remaining_seconds=cooldown_remaining_seconds,
+        cooldown_active=cooldown_active,
         prices=prices_panel,
         fees_uncollected=fees_uncollected,
         out_of_range=out_of_range,

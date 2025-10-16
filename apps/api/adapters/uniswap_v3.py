@@ -51,11 +51,8 @@ ABI_VAULT = [
     {"name":"positionTokenId","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"currentRange","outputs":[{"type":"int24"},{"type":"int24"},{"type":"uint128"}],
      "inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"twapOk","outputs":[{"type":"bool"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"lastRebalance","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"minWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"maxWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"minCooldown","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"twapWindow","outputs":[{"type":"uint32"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"maxTwapDeviationTicks","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
     # mutations (adjust names if needed)
@@ -73,6 +70,7 @@ ABI_ADAPTER = [
     {"name":"currentRange","outputs":[{"type":"int24"},{"type":"int24"},{"type":"uint128"}],"inputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
     {"name":"lastRebalance","outputs":[{"type":"uint256"}],"inputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
     {"name":"twapOk","outputs":[{"type":"bool"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"minCooldown","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"pool","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"nfpm","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"gauge","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
@@ -149,6 +147,7 @@ class UniswapV3Adapter(DexAdapter):
                     lower = upper = self.slot0()[1]; liq = 0
             else:
                 lower = upper = self.slot0()[1]; liq = 0
+                
             # twap e lastRebalance
             try:
                 twap_ok = bool(ac.functions.twapOk().call())
@@ -158,6 +157,12 @@ class UniswapV3Adapter(DexAdapter):
                 last_reb = int(ac.functions.lastRebalance(self.vault.address).call())
             except Exception:
                 last_reb = 0
+
+            try:
+                min_cd = int(ac.functions.minCooldown().call())
+            except Exception:
+                min_cd = 0
+                
             # pool/nfpm (se quiser sobrepor)
             try:
                 pool_addr = ac.functions.pool().call()
@@ -172,6 +177,7 @@ class UniswapV3Adapter(DexAdapter):
             "liq": liq,
             "twapOk": twap_ok,
             "lastRebalance": last_reb,
+            "min_cd": min_cd
         }
             
     def amounts_in_position_now(self, lower: int, upper: int, liq: int) -> Tuple[int,int]:
