@@ -8,7 +8,10 @@ from ..config import get_settings
 from ..domain.models import (
     VaultList, VaultRow, AddVaultRequest, SetPoolRequest,
     DeployVaultRequest, OpenRequest, RebalanceRequest, WithdrawRequest,
-    DepositRequest, CollectRequest, BaselineRequest, StatusResponse
+    DepositRequest, CollectRequest, BaselineRequest, StatusResponse,
+    PricesBlock, PricesPanel, UsdPanelModel,
+    HoldingsSide, HoldingsMeta, HoldingsBlock,
+    FeesUncollected, StatusCore
 )
 from ..services import state_repo, vault_repo
 from ..services.tx_service import TxService
@@ -186,15 +189,21 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
     if not v: raise HTTPException(404, "Unknown alias")
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
     
-    state_repo.ensure_state_initialized(dex, alias)
+    state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    txs = TxService(v.get("rpc_url"))
     
-    fn = ad.fn_exit() if req.mode == "pool" else ad.fn_exit_withdraw()
-    txh = TxService(v.get("rpc_url")).send(fn)
-    
+    if req.mode == "pool":
+        fn = ad.fn_exit()
+    else:
+        to_addr = txs.sender_address()
+        fn = ad.fn_exit_withdraw(to_addr)
+        
+    txh = txs.send(fn)
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": ("exit" if req.mode == "pool" else "exit_withdraw"),
+        "to": txs.sender_address() if req.mode != "pool" else None,
         "tx": txh
     })
     return {"tx": txh}
@@ -289,8 +298,8 @@ def baseline(dex: str, alias: str, req: BaselineRequest):
         if not v or not v.get("pool"):
             raise HTTPException(400, "Vault has no pool set")
         ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
-        s = compute_status(ad, dex, alias)
-        baseline_usd = float(s["usd_panel"]["usd_value"])
+        s: StatusCore = compute_status(ad, dex, alias)
+        baseline_usd = float(s.usd_panel.usd_value)
         st["vault_initial_usd"] = baseline_usd
         st["baseline_set_ts"] = datetime.utcnow().isoformat()
         state_repo.save_state(dex, alias, st)

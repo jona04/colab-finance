@@ -51,6 +51,8 @@ ABI_VAULT = [
     {"name":"positionTokenId","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"currentRange","outputs":[{"type":"int24"},{"type":"int24"},{"type":"uint128"}],
      "inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"twapOk","outputs":[{"type":"bool"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"lastRebalance","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"minWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"maxWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"twapWindow","outputs":[{"type":"uint32"}],"inputs":[],"stateMutability":"view","type":"function"},
@@ -59,8 +61,7 @@ ABI_VAULT = [
     {"name":"openInitialPosition","outputs":[],"inputs":[{"type":"int24"},{"type":"int24"}],"stateMutability":"nonpayable","type":"function"},
     {"name":"rebalanceWithCaps","outputs":[],"inputs":[{"type":"int24"},{"type":"int24"},{"type":"uint256"},{"type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
     {"name":"exitPositionToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
-    {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
-    {"name":"collectToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
+    {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[{"type":"address"}],"stateMutability":"nonpayable","type":"function"},  # <-- address to    {"name":"collectToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
 ]
 
 # ABI mínimo do adapter (universal p/ Uni e Aerodrome)
@@ -213,9 +214,9 @@ class UniswapV3Adapter(DexAdapter):
             return self.vault.functions.exitPositionToVault()
         raise NotImplementedError("Vault missing exitPositionToVault")
 
-    def fn_exit_withdraw(self):
+    def fn_exit_withdraw(self, to_addr: str):
         if hasattr(self.vault.functions, "exitPositionAndWithdrawAll"):
-            return self.vault.functions.exitPositionAndWithdrawAll()
+            return self.vault.functions.exitPositionAndWithdrawAll(Web3.to_checksum_address(to_addr))
         raise NotImplementedError("Vault missing exitPositionAndWithdrawAll")
 
     def fn_collect(self):
@@ -229,6 +230,6 @@ class UniswapV3Adapter(DexAdapter):
         return c.functions.transfer(self.vault.address, int(amount_raw))
 
     def fn_deploy_vault(self, nfpm: str):
-        # TODO: if you have a factory, implement here
+        # TODO: if have a factory, implement here
         raise NotImplementedError("Deployment via adapter not implemented (use factory when available).")
 

@@ -1,9 +1,9 @@
 {
-  "vault_address": "0x288dE3e5292a1bBeb815575Fe43ea1A0c4f48F88",
+  "vault_address": "0x561A3Ca88eF38ABC1eCB6B5C8a2fFaa28Cd0b384",
   "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
   "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
   "gauge": null,
-  "created_at": "2025-10-14T18:21:36.803986",
+  "created_at": "2025-10-16T17:10:24.284112",
   "positions": [],
   "fees_collected_cum": {
     "token0_raw": 0,
@@ -12,55 +12,68 @@
   "fees_cum_usd": 0.0,
   "exec_history": [
     {
-      "ts": "2025-10-14T18:21:36.804346",
+      "ts": "2025-10-16T17:10:24.284438",
       "mode": "deploy_vault_v2",
-      "vault": "0x288dE3e5292a1bBeb815575Fe43ea1A0c4f48F88",
-      "adapter": "0x9F1B3D01d88B85dAa77bB0C209E4AeFE8E00dd06",
+      "vault": "0x561A3Ca88eF38ABC1eCB6B5C8a2fFaa28Cd0b384",
+      "adapter": "0x7Fff52E32c28a72D1aB087Cb726c6cd01C865786",
       "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
       "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
       "gauge": null,
-      "tx_adapter": "19694867fd9d2ff914e798ce0784db4ccebdf0559294c03a9922bbb9406be1a2",
-      "tx_vault": "5ec995c0ee8b1efc94911e65173bc630b930015f709920a1e0b53dd8d08f756e"
+      "tx_adapter": "754ca0805739f8ee7f29130aa23a2838cd3aba09fec083a1fe74f9aad7b5bf7b",
+      "tx_vault": "1241bdda9e98c9135196e979fa6eb70d5ae923861da52d2f462096bd2e335a98"
     },
     {
-      "ts": "2025-10-14T18:22:26.996687",
+      "ts": "2025-10-16T17:10:49.917791",
+      "mode": "deposit",
+      "token": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "amount_human": 0.05,
+      "tx": "5a06aaccc4ad46dad0a6d347cbb7ef13741f0422e62458be46da6b9558c3ba99"
+    },
+    {
+      "ts": "2025-10-16T17:11:33.852058",
       "mode": "deposit",
       "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-      "amount_human": 5.0,
-      "tx": "b4f4f98cb71661588406f7badf45b32b0b6f332396b7cb3d9f61e0b56396c1e9"
+      "amount_human": 780.0,
+      "tx": "a8ea5c66ee9f68709eb31574cea26160f05d9b431e92d175ca7a7e9165296acc"
     },
     {
-      "ts": "2025-10-14T18:22:46.447605",
-      "mode": "deposit",
-      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-      "amount_human": 5.0,
-      "tx": "e87e47c5ded68af1e121c3cfe31ac790e3ff0a88f146efbf8609f23ecc46efc7"
+      "ts": "2025-10-16T17:11:54.730639",
+      "mode": "baseline_set",
+      "baseline_usd": 781.603911097363,
+      "tx": null
     },
     {
-      "ts": "2025-10-14T18:23:48.997486",
+      "ts": "2025-10-16T17:12:33.391290",
       "mode": "open",
-      "lower": 182000,
-      "upper": 183000,
-      "tx": "c16065405e87ffe5d64cea9fe9b6c165007c5f5160a21515e0b692746e5456b9"
+      "lower": 179000,
+      "upper": 180400,
+      "tx": "f612f526cef6b63aa801252ecf575fd333ab8f6a6c34a5a4fa1e9a9e27aa8073"
+    },
+    {
+      "ts": "2025-10-16T17:13:19.771107",
+      "mode": "baseline_set",
+      "baseline_usd": 1561.603910097363,
+      "tx": null
     }
   ],
   "collect_history": [],
   "deposit_history": [
     {
-      "ts": "2025-10-14T18:22:26.996170",
-      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-      "amount_human": 5.0,
-      "amount_raw": 5000000,
-      "tx": "b4f4f98cb71661588406f7badf45b32b0b6f332396b7cb3d9f61e0b56396c1e9"
+      "ts": "2025-10-16T17:10:49.917408",
+      "token": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "amount_human": 0.05,
+      "amount_raw": 50000000000000000,
+      "tx": "5a06aaccc4ad46dad0a6d347cbb7ef13741f0422e62458be46da6b9558c3ba99"
     },
     {
-      "ts": "2025-10-14T18:22:46.447156",
+      "ts": "2025-10-16T17:11:33.851591",
       "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-      "amount_human": 5.0,
-      "amount_raw": 5000000,
-      "tx": "e87e47c5ded68af1e121c3cfe31ac790e3ff0a88f146efbf8609f23ecc46efc7"
+      "amount_human": 780.0,
+      "amount_raw": 780000000,
+      "tx": "a8ea5c66ee9f68709eb31574cea26160f05d9b431e92d175ca7a7e9165296acc"
     }
   ],
-  "vault_initial_usd": 0.0,
-  "error_history": []
+  "error_history": [],
+  "vault_initial_usd": 1561.603910097363,
+  "baseline_set_ts": "2025-10-16T17:13:19.770772"
 }

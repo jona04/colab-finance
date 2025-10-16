@@ -87,6 +87,7 @@ contract SingleUserVaultV2 is Ownable, ReentrancyGuard {
     {
         require(poolSet, "no pool");
 
+        // Pre-approve adapter to pull up to the caps (or current balances if caps are 0)
         (address token0, address token1) = adapter.tokens();
         address spender = address(adapter);
         uint256 bal0 = IERC20(token0).balanceOf(address(this));
@@ -98,19 +99,40 @@ contract SingleUserVaultV2 is Ownable, ReentrancyGuard {
         _approveIfNeeded(token1, spender, need1);
 
         uint128 L = adapter.rebalanceWithCaps(address(this), lower, upper, cap0, cap1);
-        // if your adapter always recreates the NFT, refresh positionTokenId:
         positionTokenId = adapter.currentTokenId(address(this));
         emit Rebalanced(lower, upper, L);
     }
 
     function exitPositionToVault() external onlyOwner nonReentrant {
         adapter.exitPositionToVault(address(this));
+        positionTokenId = adapter.currentTokenId(address(this)); // likely 0
         emit Exited();
     }
 
+    /**
+     * @notice Close position (if any), move all funds to the vault, then transfer all vault balances to `to`.
+     * @param to Recipient EOA/contract that will receive both tokens.
+     */
     function exitPositionAndWithdrawAll(address to) external onlyOwner nonReentrant {
-        adapter.exitPositionAndWithdrawAll(address(this), to);
-        positionTokenId = adapter.currentTokenId(address(this)); // likely zero after burn
+        require(to != address(0), "zero to");
+
+        // 1) Close position and move funds to the vault
+        adapter.exitPositionToVault(address(this));
+        positionTokenId = adapter.currentTokenId(address(this)); // likely 0
+
+        // 2) Transfer all vault balances of token0 and token1 to `to`
+        (address token0, address token1) = adapter.tokens();
+
+        uint256 b0 = IERC20(token0).balanceOf(address(this));
+        if (b0 > 0) {
+            IERC20(token0).safeTransfer(to, b0);
+        }
+
+        uint256 b1 = IERC20(token1).balanceOf(address(this));
+        if (b1 > 0) {
+            IERC20(token1).safeTransfer(to, b1);
+        }
+
         emit Exited();
     }
 

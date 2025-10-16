@@ -38,9 +38,6 @@ interface IConcentratedLiquidityAdapter {
     /// @notice Exit position to vault: remove all liquidity and keep tokens in vault.
     function exitPositionToVault(address vault) external;
 
-    /// @notice Exit and pull idle tokens back to EOA or a recipient if your design needs it.
-    function exitPositionAndWithdrawAll(address vault, address to) external;
-
     /// @notice Collect pending fees to vault.
     function collectToVault(address vault) external returns (uint256 amount0, uint256 amount1);
 

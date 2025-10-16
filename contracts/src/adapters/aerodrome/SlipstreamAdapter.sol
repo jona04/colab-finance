@@ -172,14 +172,14 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         _burnAllAndCollect(vault, tokenId);
     }
 
-    function exitPositionAndWithdrawAll(address vault, address to) external override {
-        uint256 tokenId = currentTokenId(vault);
-        if (tokenId != 0) _burnAllAndCollect(vault, tokenId);
+    // function exitPositionAndWithdrawAll(address vault, address to) external override {
+    //     uint256 tokenId = currentTokenId(vault);
+    //     if (tokenId != 0) _burnAllAndCollect(vault, tokenId);
 
-        (address t0, address t1) = (ISlipstreamPool(pool).token0(), ISlipstreamPool(pool).token1());
-        _xferAll(t0, vault, to);
-        _xferAll(t1, vault, to);
-    }
+    //     (address t0, address t1) = (ISlipstreamPool(pool).token0(), ISlipstreamPool(pool).token1());
+    //     _xferAll(t0, vault, to);
+    //     _xferAll(t1, vault, to);
+    // }
 
     function collectToVault(address vault) external override returns (uint256 amount0, uint256 amount1) {
         uint256 tokenId = currentTokenId(vault);

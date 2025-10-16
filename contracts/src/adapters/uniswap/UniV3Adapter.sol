@@ -8,9 +8,15 @@ import {IConcentratedLiquidityAdapter} from "../../interfaces/IConcentratedLiqui
 import {INonfungiblePositionManagerMinimal as NFPM} from "../../interfaces/INonfungiblePositionManagerMinimal.sol";
 import {IUniV3PoolMinimal} from "../../interfaces/IUniV3PoolMinimal.sol";
 import {IUniswapV3FactoryMinimal} from "../../interfaces/IUniswapV3FactoryMinimal.sol";
-
 import {UniV3TwapOracle} from "./UniV3TwapOracle.sol";
 
+/**
+ * @title UniV3Adapter
+ * @notice Uniswap v3 adapter used by the generic vault (V2).
+ * @dev This version supports:
+ *      - Rebalance that can pull deficits from the vault (transferFrom) up to the caps.
+ *      - Validation: if target range contains the current tick, both tokens must be > 0.
+ */
 contract UniV3Adapter is IConcentratedLiquidityAdapter {
     using SafeERC20 for IERC20;
 
@@ -28,12 +34,13 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
     // vault => lastRebalance
     mapping(address => uint256) public lastRebalance;
 
-    // vault => tokenId (mantemos aqui; o Vault V2 também salva localmente pra exibir)
+    // vault => tokenId (NFT is held by the adapter)
     mapping(address => uint256) private _tokenId;
+
+    error InRangeRequiresBothTokens(); // clear revert reason for UX
 
     constructor(address _nfpm, address _pool) {
         require(_nfpm != address(0) && _pool != address(0), "zero");
-        // sanity: factory do pool deve ser a mesma do NFPM
         address f = NFPM(_nfpm).factory();
         require(IUniV3PoolMinimal(_pool).factory() == f, "invalid factory");
         nfpm = _nfpm;
@@ -162,6 +169,21 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
         lastRebalance[vault] = block.timestamp;
     }
 
+/**
+     * @notice Rebalance into a new [lower, upper] using fees + returned liquidity from old position
+     *         and (if needed) pulling the deficit from the vault (transferFrom), up to caps.
+     * @param vault The vault address this adapter manages.
+     * @param lower New lower tick.
+     * @param upper New upper tick.
+     * @param cap0  Max amount of token0 to use (0 = unlimited up to availability).
+     * @param cap1  Max amount of token1 to use (0 = unlimited up to availability).
+     * @return newLiquidity The liquidity of the newly minted position.
+     *
+     * Invariants & validations:
+     * - If current spot tick is inside [lower, upper), both token0 and token1 must be positive
+     *   (after pulling from vault if adapter balance alone is not enough), otherwise revert with
+     *   InRangeRequiresBothTokens().
+     */
     function rebalanceWithCaps(
         address vault,
         int24 lower,
@@ -175,46 +197,92 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
         _validateWidth(lower, upper);
         _validateTickSpacing(lower, upper);
 
+        // === 0) read spot (for "inside" validation later)
+        (, int24 spotTick, , , , , ) = IUniV3PoolMinimal(pool).slot0();
+        bool targetContainsSpot = (spotTick >= lower && spotTick < upper);
+
         uint256 tid = _tokenId[vault];
 
-        // 1) collect fees antes de mexer na liquidity (para o adapter)
-        NFPM(nfpm).collect(NFPM.CollectParams({
-            tokenId: tid,
-            recipient: address(this),
-            amount0Max: type(uint128).max,
-            amount1Max: type(uint128).max
-        }));
-
-        // 2) decrease total (se houver)
-        (, , , , , , , uint128 liq, , , , ) = NFPM(nfpm).positions(tid);
-        if (liq > 0) {
-            NFPM(nfpm).decreaseLiquidity(NFPM.DecreaseLiquidityParams({
-                tokenId: tid,
-                liquidity: liq,
-                amount0Min: 0,
-                amount1Min: 0,
-                deadline: block.timestamp + 900
-            }));
-            // coleta de tokens owed do decrease
-            NFPM(nfpm).collect(NFPM.CollectParams({
+        // === 1) Collect fees to adapter
+        NFPM(nfpm).collect(
+            NFPM.CollectParams({
                 tokenId: tid,
                 recipient: address(this),
                 amount0Max: type(uint128).max,
                 amount1Max: type(uint128).max
-            }));
+            })
+        );
+
+        // === 2) Remove all old liquidity (if any) and collect owed
+        (, , , , , , , uint128 liq, , , , ) = NFPM(nfpm).positions(tid);
+        if (liq > 0) {
+            NFPM(nfpm).decreaseLiquidity(
+                NFPM.DecreaseLiquidityParams({
+                    tokenId: tid,
+                    liquidity: liq,
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    deadline: block.timestamp + 900
+                })
+            );
+            NFPM(nfpm).collect(
+                NFPM.CollectParams({
+                    tokenId: tid,
+                    recipient: address(this),
+                    amount0Max: type(uint128).max,
+                    amount1Max: type(uint128).max
+                })
+            );
         }
 
-        // 3) burn posição antiga
+        // === 3) Burn old NFT
         NFPM(nfpm).burn(tid);
         _tokenId[vault] = 0;
 
-        // 4) calcular “desired” com caps a partir dos tokens que estão NO ADAPTER (coletados)
+        // === 4) Compute desired amounts using adapter+vault, respecting caps
         (address token0, address token1) = tokens();
+
+        // Current balances in adapter after collect/decrease/burn
         uint256 bal0 = IERC20(token0).balanceOf(address(this));
         uint256 bal1 = IERC20(token1).balanceOf(address(this));
-        uint256 use0 = (cap0 == 0 || cap0 > bal0) ? bal0 : cap0;
-        uint256 use1 = (cap1 == 0 || cap1 > bal1) ? bal1 : cap1;
 
+        // Caps: 0 = unlimited (bounded by availability)
+        uint256 want0 = (cap0 == 0) ? type(uint256).max : cap0;
+        uint256 want1 = (cap1 == 0) ? type(uint256).max : cap1;
+
+        // Start with what we already have in the adapter
+        uint256 use0 = bal0;
+        uint256 use1 = bal1;
+
+        // Pull deficits from vault (vault pre-approved this adapter in the caller)
+        if (want0 > use0) {
+            uint256 deficit0 = want0 - use0;
+            uint256 v0 = IERC20(token0).balanceOf(vault);
+            uint256 pull0 = deficit0 > v0 ? v0 : deficit0;
+            if (pull0 > 0) {
+                IERC20(token0).safeTransferFrom(vault, address(this), pull0);
+                use0 += pull0;
+            }
+        }
+        if (want1 > use1) {
+            uint256 deficit1 = want1 - use1;
+            uint256 v1 = IERC20(token1).balanceOf(vault);
+            uint256 pull1 = deficit1 > v1 ? v1 : deficit1;
+            if (pull1 > 0) {
+                IERC20(token1).safeTransferFrom(vault, address(this), pull1);
+                use1 += pull1;
+            }
+        }
+
+        // === 5) Validation for "inside" mints: both sides must be positive
+        if (targetContainsSpot) {
+            // If still one side is zero after pulling from the vault, revert with a clear message.
+            if (use0 == 0 || use1 == 0) {
+                revert InRangeRequiresBothTokens();
+            }
+        }
+
+        // === 6) Mint new position using the final amounts
         _approveIfNeeded(token0, nfpm, use0);
         _approveIfNeeded(token1, nfpm, use1);
 
@@ -236,7 +304,7 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
         _tokenId[vault] = newTid;
         newLiquidity = L;
 
-        // devolve sobras ao vault
+        // === 7) Return leftovers to vault
         uint256 r0 = IERC20(token0).balanceOf(address(this));
         uint256 r1 = IERC20(token1).balanceOf(address(this));
         if (r0 > 0) IERC20(token0).safeTransfer(vault, r0);
@@ -245,11 +313,13 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
         lastRebalance[vault] = block.timestamp;
     }
 
+    // ----- exit helpers -----
+
     function _exitPositionToVault(address vault) internal {
         uint256 tid = _tokenId[vault];
         require(tid != 0, "no position");
 
-        // collect fees (para adapter), depois decrease e collect owed
+        // collect -> decrease -> collect -> burn
         NFPM(nfpm).collect(NFPM.CollectParams({
             tokenId: tid,
             recipient: address(this),
@@ -274,7 +344,7 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
             }));
         }
 
-        // burn e envia tudo ao vault
+        // burn and send all to vault
         NFPM(nfpm).burn(tid);
         _tokenId[vault] = 0;
 
@@ -285,40 +355,34 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
         if (b1 > 0) IERC20(token1).safeTransfer(vault, b1);
     }
 
+    /**
+     * @notice For Uniswap we leave the actual "send-to-user" to the Vault.
+     *         We only close the position and push all funds to the Vault.
+     */
     function exitPositionToVault(address vault) external override {
         _exitPositionToVault(vault);
-    }
-
-    function exitPositionAndWithdrawAll(address vault, address to) external override {
-        _exitPositionToVault(vault);
-        (address token0, address token1) = tokens();
-
-        // agora os tokens estão no vault; o contrato vault deve transferir para `to` em outro passo,
-        // porém para manter a assinatura do interface, não movimentamos tokens do vault aqui.
-        // Se você prefere, mude a semântica: o adapter não toca “to”, só fecha posição.
-        // Mantemos “no-op” extra aqui.
-        to; // silenciar warning
     }
 
     function collectToVault(address vault) external override returns (uint256 amount0, uint256 amount1) {
         uint256 tid = _tokenId[vault];
         require(tid != 0, "no position");
 
-        // coleta para o adapter
-        (amount0, amount1) = NFPM(nfpm).collect(NFPM.CollectParams({
-            tokenId: tid,
-            recipient: address(this),
-            amount0Max: type(uint128).max,
-            amount1Max: type(uint128).max
-        }));
+        (amount0, amount1) = NFPM(nfpm).collect(
+            NFPM.CollectParams({
+                tokenId: tid,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            })
+        );
 
-        // envia ao vault
         (address token0, address token1) = tokens();
         if (amount0 > 0) IERC20(token0).safeTransfer(vault, amount0);
         if (amount1 > 0) IERC20(token1).safeTransfer(vault, amount1);
     }
 
-    // ===== staking (não aplicável no Uniswap v3) =====
+
+    // ===== staking (not applicable to Uniswap v3) =====
     function stakePosition(address) external override {}
     function unstakePosition(address) external override {}
     function claimRewards(address) external override {}

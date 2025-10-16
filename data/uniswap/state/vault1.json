@@ -1,9 +1,9 @@
 {
-  "vault_address": "0x7435DcB29bF9219EF11746ED84205117Ba0aae08",
+  "vault_address": "0xfa912428B4c484124d72381bB54a2f8d7B960fCB",
   "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
   "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
   "gauge": null,
-  "created_at": "2025-10-14T18:08:00.646638",
+  "created_at": "2025-10-16T15:34:24.398374",
   "positions": [],
   "fees_collected_cum": {
     "token0_raw": 0,
@@ -12,68 +12,77 @@
   "fees_cum_usd": 0.0,
   "exec_history": [
     {
-      "ts": "2025-10-14T18:08:00.646971",
+      "ts": "2025-10-16T15:34:24.398697",
       "mode": "deploy_vault_v2",
-      "vault": "0x7435DcB29bF9219EF11746ED84205117Ba0aae08",
-      "adapter": "0x2cefA685258bc6E355087EadA905C9Fba4Ee2444",
+      "vault": "0xfa912428B4c484124d72381bB54a2f8d7B960fCB",
+      "adapter": "0x9a502D1D19B9f157D9bd68148f5c931adaC4812A",
       "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
       "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
       "gauge": null,
-      "tx_adapter": "72e0aa465aec4506e60a854de454f67feefc0036e13990059c2808d4304ce11f",
-      "tx_vault": "937af4e4f457c4dacea4d40b64fe5329ef8553d90b26a388bf55c26a94ead05e"
+      "tx_adapter": "8788391fd320b203008dc34261007bc85c187cb296f5e49dc9fad4d3195c4cf8",
+      "tx_vault": "ac8bc480cac4348cf38ee74beda60ce8a2f61826b7575b36c793644a08c2eb9b"
     },
     {
-      "ts": "2025-10-14T18:08:17.667442",
+      "ts": "2025-10-16T15:34:54.595105",
       "mode": "deposit",
       "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-      "amount_human": 5.0,
-      "tx": "e49353650323a9ab94a5be4f829bec8e5fad2153e33894f5618b801cb5172140"
+      "amount_human": 16.0,
+      "tx": "fb435ab6ddb4079085d29fc63adb03095ac76eee59c3d615c8d8b1e27943126a"
     },
     {
-      "ts": "2025-10-14T18:08:37.381908",
+      "ts": "2025-10-16T15:35:21.274675",
+      "mode": "deposit",
+      "token": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "amount_human": 0.001,
+      "tx": "fdff29cafb7ae1e4dbbbabc10861d137e29912d39be262ffaabef239380b2118"
+    },
+    {
+      "ts": "2025-10-16T15:36:46.055800",
       "mode": "open",
-      "lower": 182000,
-      "upper": 183000,
-      "tx": "09273d42ad604420d33dd57987d09d6530b30bca40f1e7360ab4d42bdc9e9759"
+      "lower": 179400,
+      "upper": 180000,
+      "tx": "d131db3ffb5b4d42cf4fca8db5717f528ebe0e7f9e8c035b644f100f2e99db60"
     },
     {
-      "ts": "2025-10-14T18:19:16.604347",
+      "ts": "2025-10-16T15:39:55.272176",
       "mode": "baseline_set",
-      "baseline_usd": 0.0,
+      "baseline_usd": 31.632077221947245,
       "tx": null
     },
     {
-      "ts": "2025-10-14T18:19:37.512685",
-      "mode": "deposit",
-      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-      "amount_human": 5.0,
-      "tx": "c8c7153942c3f67d4e96d20e858d267f4c6e8289161c9cc0f62095525fdbb3b6"
+      "ts": "2025-10-16T17:05:18.871922",
+      "mode": "rebalance_caps",
+      "lower": 178200,
+      "upper": 181800,
+      "cap0": null,
+      "cap1": null,
+      "tx": "39a7022c97ad8afb8184033055cf1668cf6c43e3867ed1ccb3988185c7843766"
     },
     {
-      "ts": "2025-10-14T18:19:57.014765",
-      "mode": "baseline_set",
-      "baseline_usd": 5.0,
-      "tx": null
+      "ts": "2025-10-16T17:08:28.067729",
+      "mode": "exit_withdraw",
+      "to": "0x71955d4098cD2C0737184Ec881016a538ed9A90D",
+      "tx": "42fcdc009aedee4fe52203941cbf991acf410d9bd2a01e8d1e4dfb2f4aab35fe"
     }
   ],
   "collect_history": [],
   "deposit_history": [
     {
-      "ts": "2025-10-14T18:08:17.667018",
+      "ts": "2025-10-16T15:34:54.594741",
       "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-      "amount_human": 5.0,
-      "amount_raw": 5000000,
-      "tx": "e49353650323a9ab94a5be4f829bec8e5fad2153e33894f5618b801cb5172140"
+      "amount_human": 16.0,
+      "amount_raw": 16000000,
+      "tx": "fb435ab6ddb4079085d29fc63adb03095ac76eee59c3d615c8d8b1e27943126a"
     },
     {
-      "ts": "2025-10-14T18:19:37.512133",
-      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-      "amount_human": 5.0,
-      "amount_raw": 5000000,
-      "tx": "c8c7153942c3f67d4e96d20e858d267f4c6e8289161c9cc0f62095525fdbb3b6"
+      "ts": "2025-10-16T15:35:21.274133",
+      "token": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "amount_human": 0.001,
+      "amount_raw": 1000000000000000,
+      "tx": "fdff29cafb7ae1e4dbbbabc10861d137e29912d39be262ffaabef239380b2118"
     }
   ],
+  "vault_initial_usd": 31.632077221947245,
   "error_history": [],
-  "vault_initial_usd": 5.0,
-  "baseline_set_ts": "2025-10-14T18:19:57.014457"
+  "baseline_set_ts": "2025-10-16T15:39:55.271846"
 }
