@@ -1,0 +1,18 @@
+{
+  "strategies":[
+    {
+      "id": "breakeven_single_sided",
+      "name": "Single-Sided Breakeven Reallocator",
+      "active": true,
+      "description": "When price stays out-of-range long enough, open the closest possible single-sided range on the price side and set the opposite boundary so that, if touched, price-only value reaches >= baseline*(1+buffer). On the BELOW side, the near boundary is the closest LOWER (strictly above current tick) and the UPPER is derived from a USDC/ETH percentage gap off the LOWER to keep the position out-of-range by construction.",
+      "notes": "Params:\n- minimum_minutes_out_of_range: minutes the price must remain out-of-range to trigger.\n- min_ticks_from_price_on_near_side: how many spacing steps away the near boundary is placed from the current tick (1 keeps it minimal while still strictly out-of-range).\n- breakeven_buffer_pct: extra margin over the baseline for the price-only breakeven test.\n- upper_gap_usdc_per_eth_pct: for BELOW, defines UPPER as a percentage below the USDC/ETH price at LOWER (tick↑ → USDC/ETH↓). Using price space avoids tick rounding edge cases and keeps the position out-of-range consistently.\n- max_opposite_side_expansions: only used on ABOVE side (single-sided token1) to expand LOWER downward until breakeven, capped for safety.",
+      "params": {
+        "minimum_minutes_out_of_range": 10,
+        "min_ticks_from_price_on_near_side": 1,
+        "breakeven_buffer_pct": 0.001,
+        "upper_gap_usdc_per_eth_pct": 0.01,
+        "max_opposite_side_expansions": 100
+      }
+    }
+  ]
+}

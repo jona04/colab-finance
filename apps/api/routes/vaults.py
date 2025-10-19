@@ -20,7 +20,7 @@ from ..adapters.uniswap_v3 import UniswapV3Adapter
 from ..adapters.aerodrome import AerodromeAdapter
 from ..domain.models import StakeRequest, UnstakeRequest, ClaimRewardsRequest
 
-router = APIRouter()
+router = APIRouter(tags=["vaults"])
 
 def _adapter_for(dex: str, pool: str, nfpm: str | None, vault: str, rpc_url: str | None):
     s = get_settings()
@@ -214,10 +214,10 @@ def collect(dex: str, alias: str, _req: CollectRequest):
     if not v: raise HTTPException(404, "Unknown alias")
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
     
-    state_repo.ensure_state_initialized(dex, alias)
+    state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
 
-    snap = compute_status(ad, alias)
+    snap: StatusCore = compute_status(ad, dex, alias)
     
     pre_fees0_raw = int(snap.get("fees", {}).get("uncollected_token0_raw", 0))
     pre_fees1_raw = int(snap.get("fees", {}).get("uncollected_token1_raw", 0))
