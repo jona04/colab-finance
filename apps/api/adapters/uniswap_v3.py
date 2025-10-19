@@ -61,7 +61,8 @@ ABI_VAULT = [
     {"name":"openInitialPosition","outputs":[],"inputs":[{"type":"int24"},{"type":"int24"}],"stateMutability":"nonpayable","type":"function"},
     {"name":"rebalanceWithCaps","outputs":[],"inputs":[{"type":"int24"},{"type":"int24"},{"type":"uint256"},{"type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
     {"name":"exitPositionToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
-    {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[{"type":"address"}],"stateMutability":"nonpayable","type":"function"},  # <-- address to    {"name":"collectToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
+    {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[{"type":"address"}],"stateMutability":"nonpayable","type":"function"},  # <-- address to    
+    {"name":"collectToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
 ]
 
 # ABI mínimo do adapter (universal p/ Uni e Aerodrome)

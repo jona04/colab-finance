@@ -108,6 +108,14 @@ class HoldingsBlock(BaseModel):
     symbols: Dict[str, str]     # {"token0": "WETH", "token1": "USDC"}
     addresses: Dict[str, str]   # {"token0": "0x...", "token1": "0x..."}
 
+class FeesCollectedCum(BaseModel):
+    """Cumulative fees that were already collected historically (persisted off-chain)."""
+    token0_raw: int
+    token1_raw: int
+    token0: float
+    token1: float
+    usd: float
+    
 class FeesUncollected(BaseModel):
     token0: float
     token1: float
@@ -126,6 +134,7 @@ class StatusCore(BaseModel):
     cooldown_active: bool
     prices: PricesPanel
     fees_uncollected: FeesUncollected
+    fees_collected_cum: FeesCollectedCum
     out_of_range: bool
     pct_outside_tick: float
     usd_panel: UsdPanelModel

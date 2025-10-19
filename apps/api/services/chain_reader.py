@@ -17,7 +17,7 @@ from ..adapters.uniswap_v3 import UniswapV3Adapter
 from ..domain.models import (
     PricesBlock, PricesPanel, UsdPanelModel,
     HoldingsSide, HoldingsMeta, HoldingsBlock,
-    FeesUncollected, StatusCore
+    FeesUncollected, StatusCore, FeesCollectedCum
 )
 
 getcontext().prec = 80
@@ -81,28 +81,31 @@ def _value_usd(
 
 def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]:
     """
-    Build a full "status" dict using the adapter.
+    Build a full "status" model from on-chain reads.
 
-    USD valuation rule:
+    Rules for USD valuation:
       - If token1 is USD-like: USD = token0 * (token1/token0) + token1
       - If token0 is USD-like: USD = token1 * (token0/token1) + token0
-      - Else: fallback to treat token1 as quote (approx): USD ~= token0 * (t1/t0) + token1
-    
-    Status completo:
-      - preços (spot, lower, upper)
-      - se está fora de range e % fora
-      - fees não coletadas (callStatic)
-      - breakdown de inventário: vault_idle, in_position, totals
-      - todos os valores convertidos para USD/USDC se algum lado for stable (ou fallback se nenhum for)
+      - Else (no stables): fallback to quote token1 => USD ~= token0 * (t1/t0) + token1
+
+    What we return:
+      - Prices (spot/lower/upper) with both price views
+      - Out-of-range and how far in % (by ticks)
+      - Uncollected fees (preview via callStatic collect)
+      - Inventory breakdown: vault_idle, in_position, totals  (NO subtraction of collected fees)
+      - Cumulative *already collected* fees in a separate block (raw + human + USD)
+      - USD panel with baseline/delta
     """
     st = load_state(dex, alias)
 
+    # ---- pool & vault metadata
     meta = adapter.pool_meta()
     dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
     sym0, sym1 = meta["sym0"], meta["sym1"]
     t0_addr, t1_addr = meta["token0"], meta["token1"]
     spacing = int(meta["spacing"])
 
+    # ---- slot0 and vault state
     sqrtP, tick = adapter.slot0()
     vstate = adapter.vault_state()
     lower, upper, liq = int(vstate["lower"]), int(vstate["upper"]), int(vstate["liq"])
@@ -112,28 +115,26 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]
     min_cd = int(vstate.get("min_cd", 0))
 
     now = adapter.w3.eth.get_block("latest").timestamp
-    
     cooldown_remaining_seconds = int(last_rebalance + min_cd - now)
     cooldown_active = cooldown_remaining_seconds > 0
 
-    # prices
+    # ---- prices
     p_t1_t0 = _sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)  # token1 per token0
     p_t0_t1 = (0.0 if p_t1_t0 == 0 else 1.0 / p_t1_t0)
 
     out_of_range = tick < lower or tick >= upper
     pct_outside_tick = _pct_from_dtick((lower - tick) if (out_of_range and tick < lower) else (tick - upper)) if out_of_range else 0.0
 
-    # fees preview
+    # ---- uncollected fees (preview from NFPM via callStatic)
     fees0 = fees1 = 0
     token_id = int(vstate.get("tokenId", 0) or 0)
     if token_id != 0:
         fees0, fees1 = adapter.call_static_collect(token_id, adapter.vault.address)
-
     fees0_h = float(fees0) / (10 ** dec0)
     fees1_h = float(fees1) / (10 ** dec1)
-    # For fees USD we apply the same valuation rule below after we compute valuation inputs
+    fees_usd = _value_usd(fees0_h, fees1_h, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
 
-    # inventory (idle + in-position)
+    # ---- balances (NO subtraction of 'fees_collected_cum' anymore)
     erc0 = adapter.erc20(meta["token0"])
     erc1 = adapter.erc20(meta["token1"])
     bal0_idle_raw = int(erc0.functions.balanceOf(adapter.vault.address).call())
@@ -144,13 +145,9 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]
         a0, a1 = adapter.amounts_in_position_now(lower, upper, liq)
         amt0_pos_raw, amt1_pos_raw = int(a0), int(a1)
 
-    # subtract cumul collected fees from "live stock"
-    fees_cum = st.get("fees_collected_cum", {"token0_raw": 0, "token1_raw": 0})
-    adj0_idle_raw = max(0, bal0_idle_raw - int(fees_cum.get("token0_raw", 0) or 0))
-    adj1_idle_raw = max(0, bal1_idle_raw - int(fees_cum.get("token1_raw", 0) or 0))
-    
-    adj0_idle = adj0_idle_raw / (10 ** dec0)
-    adj1_idle = adj1_idle_raw / (10 ** dec1)
+    # human amounts
+    adj0_idle = bal0_idle_raw / (10 ** dec0)
+    adj1_idle = bal1_idle_raw / (10 ** dec1)
     amt0_pos = amt0_pos_raw / (10 ** dec0)
     amt1_pos = amt1_pos_raw / (10 ** dec1)
     
@@ -161,8 +158,15 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]
     pos_usd  = _value_usd(amt0_pos,  amt1_pos,  p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
     total_usd = _value_usd(tot0, tot1, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
 
-    fees_usd = _value_usd(fees0_h, fees1_h, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
-
+    # ---- cumulative fees already collected (from state)
+    cum = st.get("fees_collected_cum", {"token0_raw": 0, "token1_raw": 0}) or {}
+    cum0_raw = int(cum.get("token0_raw", 0) or 0)
+    cum1_raw = int(cum.get("token1_raw", 0) or 0)
+    cum0 = cum0_raw / (10 ** dec0)
+    cum1 = cum1_raw / (10 ** dec1)
+    cum_usd = _value_usd(cum0, cum1, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
+    
+    # ---- baseline handling
     baseline = st.get("vault_initial_usd")
     if baseline is None:
         baseline = total_usd
@@ -193,6 +197,15 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]
     fees_uncollected = FeesUncollected(
         token0=fees0_h, token1=fees1_h, usd=float(fees_usd), sym0=sym0, sym1=sym1
     )
+
+
+    fees_collected_cum = FeesCollectedCum(
+        token0_raw=cum0_raw,
+        token1_raw=cum1_raw,
+        token0=cum0,
+        token1=cum1,
+        usd=float(cum_usd),
+    )
     
     range_side = "inside" if not out_of_range else ("below" if tick < lower else "above")
 
@@ -207,6 +220,7 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]
         cooldown_active=cooldown_active,
         prices=prices_panel,
         fees_uncollected=fees_uncollected,
+        fees_collected_cum=fees_collected_cum,
         out_of_range=out_of_range,
         pct_outside_tick=pct_outside_tick,
         usd_panel=usd_panel,

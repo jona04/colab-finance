@@ -210,39 +210,89 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
 
 @router.post("/vaults/{dex}/{alias}/collect")
 def collect(dex: str, alias: str, _req: CollectRequest):
+    """
+    Collect unclaimed fees to the vault.
+
+    How it works:
+    - We read the *current* tokenId from the adapter's `vault_state()`.
+    - If tokenId == 0 => there's no active position to collect (HTTP 400).
+    - We preview fees using a `callStatic` collect on NFPM to get RAW amounts.
+    - We convert fee preview to human units and to USD/USDC using the same
+      rule as status:
+        * if token1 is USD-like: USD = f0 * (t1/t0) + f1
+        * elif token0 is USD-like: USD = f1 * (t0/t1) + f0
+        * else: fallback USD ~= f0 * (t1/t0) + f1
+    - Then we call the vault's `collectToVault()` via adapter.fn_collect().
+    - We persist a snapshot of collected fees (raw + estimated USD) and history.
+
+    Notes:
+    - `compute_status()` returns a Pydantic model (StatusCore), not a dict.
+    - We use `adapter.call_static_collect(tokenId, vault)` for a precise preview.
+    """
+    # --- basic guards
     v = vault_repo.get_vault(dex, alias)
-    if not v: raise HTTPException(404, "Unknown alias")
-    if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
-    
+    if not v:
+        raise HTTPException(404, "Unknown alias")
+    if not v.get("pool"):
+        raise HTTPException(400, "Vault has no pool set")
+
     state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
 
-    snap: StatusCore = compute_status(ad, dex, alias)
-    
-    pre_fees0_raw = int(snap.get("fees", {}).get("uncollected_token0_raw", 0))
-    pre_fees1_raw = int(snap.get("fees", {}).get("uncollected_token1_raw", 0))
-    usdc_per_eth = float(snap.get("prices", {}).get("current", {}).get("p_t0_t1", 0.0))  # USDC/ETH
+    # --- fetch meta + live status (for price conversion)
+    snap: StatusCore = compute_status(ad, dex, alias)  # Pydantic model
     meta = ad.pool_meta()
     dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
-    
-    pre_fees0 = pre_fees0_raw / (10 ** dec0)
-    pre_fees1 = pre_fees1_raw / (10 ** dec1)
-    pre_fees_usd = pre_fees0 + pre_fees1 * usdc_per_eth
-    
+    sym0, sym1 = meta["sym0"], meta["sym1"]
+
+    # prices for conversion
+    p_t1_t0 = float(snap.prices.current.p_t1_t0)  # token1 per token0
+    p_t0_t1 = float(snap.prices.current.p_t0_t1)  # token0 per token1
+
+    # --- get current tokenId to know if there is a position and preview fees
+    vstate = ad.vault_state()
+    token_id = int(vstate.get("tokenId", 0) or 0)
+    if token_id == 0:
+        # nothing to collect from NFPM (positionless)
+        raise HTTPException(400, "No active position to collect fees from.")
+
+    # callStatic collect to preview raw fees
+    fees0_raw, fees1_raw = ad.call_static_collect(token_id, ad.vault.address)
+
+    # human amounts
+    pre_fees0 = float(fees0_raw) / (10 ** dec0)
+    pre_fees1 = float(fees1_raw) / (10 ** dec1)
+
+    # --- USD/USDC conversion rule (same as compute_status)
+    def _is_usd_symbol(sym: str) -> bool:
+        try:
+            return sym.upper() in {"USDC", "USDBC", "USDCE", "USDT", "DAI", "USDD", "USDP", "BUSD"}
+        except Exception:
+            return False
+
+    if _is_usd_symbol(sym1):
+        pre_fees_usd = pre_fees0 * p_t1_t0 + pre_fees1
+    elif _is_usd_symbol(sym0):
+        pre_fees_usd = pre_fees1 * p_t0_t1 + pre_fees0
+    else:
+        # fallback: treat token1 as quote
+        pre_fees_usd = pre_fees0 * p_t1_t0 + pre_fees1
+
+    # --- execute collect
     fn = ad.fn_collect()
     txh = TxService(v.get("rpc_url")).send(fn)
-    
+
+    # --- persist snapshot and history (using *preview* values)
     state_repo.add_collected_fees_snapshot(
         dex, alias,
-        fees0_raw=pre_fees0_raw,
-        fees1_raw=pre_fees1_raw,
+        fees0_raw=int(fees0_raw),
+        fees1_raw=int(fees1_raw),
         fees_usd_est=float(pre_fees_usd)
     )
-
     state_repo.append_history(dex, alias, "collect_history", {
         "ts": datetime.utcnow().isoformat(),
-        "fees0_raw": pre_fees0_raw,
-        "fees1_raw": pre_fees1_raw,
+        "fees0_raw": int(fees0_raw),
+        "fees1_raw": int(fees1_raw),
         "fees_usd_est": float(pre_fees_usd),
         "tx": txh
     })
@@ -251,7 +301,7 @@ def collect(dex: str, alias: str, _req: CollectRequest):
         "mode": "collect",
         "tx": txh
     })
-    
+
     return {"tx": txh}
 
 @router.post("/vaults/{dex}/{alias}/deposit")
