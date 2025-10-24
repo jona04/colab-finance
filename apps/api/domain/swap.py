@@ -9,5 +9,12 @@ class SwapQuoteRequest(BaseModel):
     fee: Optional[int] = None # 500/3000/10000
     sqrt_price_limit_x96: Optional[int] = 0
 
-class SwapExactInRequest(SwapQuoteRequest):
-    slippage_bps: int = 50    # 0.50% default
+
+class SwapExactInRequest(BaseModel):
+    token_in: str
+    token_out: str
+    amount_in: Optional[float] = None          # valor no token_in (ex.: WETH)
+    amount_in_usd: Optional[float] = None      # alternativo: valor em USD/USDC
+    fee: Optional[int] = None
+    sqrt_price_limit_x96: Optional[int] = None
+    slippage_bps: int = 50

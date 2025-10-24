@@ -86,46 +86,33 @@ ABI_ADAPTER = [
     {"name":"gauge","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
 ]
 
-ABI_SWAP_ROUTER_MIN = [
-    {
-      "name":"exactInputSingle",
-      "type":"function",
-      "stateMutability":"payable",
-      "inputs":[
-        {"name":"params","type":"tuple","components":[
-          {"name":"tokenIn","type":"address"},
-          {"name":"tokenOut","type":"address"},
-          {"name":"fee","type":"uint24"},
-          {"name":"recipient","type":"address"},
-          {"name":"deadline","type":"uint256"},
-          {"name":"amountIn","type":"uint256"},
-          {"name":"amountOutMinimum","type":"uint256"},
-          {"name":"sqrtPriceLimitX96","type":"uint160"}
-        ]}
-      ],
-      "outputs":[{"name":"amountOut","type":"uint256"}]
-    }
-]
-
-ABI_QUOTER_V2_MIN = [
-  {
-    "name":"quoteExactInputSingle",
-    "type":"function",
-    "stateMutability":"view",
-    "inputs":[
-      {"name":"tokenIn","type":"address"},
-      {"name":"tokenOut","type":"address"},
-      {"name":"amountIn","type":"uint256"},
-      {"name":"fee","type":"uint24"},
-      {"name":"sqrtPriceLimitX96","type":"uint160"}
-    ],
-    "outputs":[
-      {"name":"amountOut","type":"uint256"},
-      {"name":"sqrtPriceX96After","type":"uint160"},
-      {"name":"initializedTicksCrossed","type":"uint32"},
-      {"name":"gasEstimate","type":"uint256"}
-    ]
-  }
+ABI_QUOTER_V2 = [
+    {"inputs":[{"internalType":"address","name":"_factory","type":"address"},{"internalType":"address","name":"_WETH9","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},
+    {"inputs":[],"name":"WETH9","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+    {"inputs":[],"name":"factory","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+    {"inputs":[{"internalType":"bytes","name":"path","type":"bytes"},{"internalType":"uint256","name":"amountIn","type":"uint256"}],"name":"quoteExactInput","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"},{"internalType":"uint160[]","name":"sqrtPriceX96AfterList","type":"uint160[]"},{"internalType":"uint32[]","name":"initializedTicksCrossedList","type":"uint32[]"},{"internalType":"uint256","name":"gasEstimate","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+    {"inputs":[{"components":[
+        {"internalType":"address","name":"tokenIn","type":"address"},
+        {"internalType":"address","name":"tokenOut","type":"address"},
+        {"internalType":"uint256","name":"amountIn","type":"uint256"},
+        {"internalType":"uint24","name":"fee","type":"uint24"},
+        {"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"}
+    ],"internalType":"struct IQuoterV2.QuoteExactInputSingleParams","name":"params","type":"tuple"}],
+     "name":"quoteExactInputSingle",
+     "outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"},{"internalType":"uint160","name":"sqrtPriceX96After","type":"uint160"},{"internalType":"uint32","name":"initializedTicksCrossed","type":"uint32"},{"internalType":"uint256","name":"gasEstimate","type":"uint256"}],
+     "stateMutability":"nonpayable","type":"function"},
+    {"inputs":[{"internalType":"bytes","name":"path","type":"bytes"},{"internalType":"uint256","name":"amountOut","type":"uint256"}],"name":"quoteExactOutput","outputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint160[]","name":"sqrtPriceX96AfterList","type":"uint160[]"},{"internalType":"uint32[]","name":"initializedTicksCrossedList","type":"uint32[]"},{"internalType":"uint256","name":"gasEstimate","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+    {"inputs":[{"components":[
+        {"internalType":"address","name":"tokenIn","type":"address"},
+        {"internalType":"address","name":"tokenOut","type":"address"},
+        {"internalType":"uint256","name":"amount","type":"uint256"},
+        {"internalType":"uint24","name":"fee","type":"uint24"},
+        {"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"}
+    ],"internalType":"struct IQuoterV2.QuoteExactOutputSingleParams","name":"params","type":"tuple"}],
+     "name":"quoteExactOutputSingle",
+     "outputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint160","name":"sqrtPriceX96After","type":"uint160"},{"internalType":"uint32","name":"initializedTicksCrossed","type":"uint32"},{"internalType":"uint256","name":"gasEstimate","type":"uint256"}],
+     "stateMutability":"nonpayable","type":"function"},
+    {"inputs":[{"internalType":"int256","name":"amount0Delta","type":"int256"},{"internalType":"int256","name":"amount1Delta","type":"int256"},{"internalType":"bytes","name":"path","type":"bytes"}],"name":"uniswapV3SwapCallback","outputs":[],"stateMutability":"view","type":"function"}
 ]
 
 U128_MAX = (1<<128) - 1
@@ -137,7 +124,7 @@ class UniswapV3Adapter(DexAdapter):
     def erc20_abi(self) -> list: return ABI_ERC20
     def nfpm_abi(self) -> list:  return ABI_NFPM
     def vault_abi(self) -> list: return ABI_VAULT
-    def quoter_abi(self) -> list: return ABI_QUOTER_V2_MIN
+    def quoter_abi(self) -> list: return ABI_QUOTER_V2
     
     def pool_contract(self):
         return self.w3.eth.contract(address=Web3.to_checksum_address(self.pool), abi=self.pool_abi())

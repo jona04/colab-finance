@@ -1,0 +1,97 @@
+{
+  "vault_address": "0x41ddD8CdE086B6A0A9849dC0Cf2Aef36895B9560",
+  "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+  "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+  "gauge": null,
+  "created_at": "2025-10-24T17:50:00.588211",
+  "positions": [],
+  "fees_collected_cum": {
+    "token0_raw": 0,
+    "token1_raw": 0
+  },
+  "fees_cum_usd": 0.0,
+  "exec_history": [
+    {
+      "ts": "2025-10-24T17:50:00.588604",
+      "mode": "deploy_vault_v2",
+      "vault": "0x41ddD8CdE086B6A0A9849dC0Cf2Aef36895B9560",
+      "adapter": "0xDd9354454544D854fE979209311Ab5dc5BD4452F",
+      "pool": "0x6418EEC70f50913ff0d756B48d32Ce7C02b47C47",
+      "nfpm": "0x1238536071E1c677A632429e3655c799b22cDA52",
+      "gauge": null,
+      "tx_adapter": "3d19ca3043c0e98a2ad862345e5d2455c6fa1c13c295f3ef4dfa897bfad3199e",
+      "tx_vault": "28443ad28d06a4f1e17050340ea3333c50bf99a849a91ab559d5961f0caa2a82"
+    },
+    {
+      "ts": "2025-10-24T17:50:22.134674",
+      "mode": "deposit",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 100.0,
+      "tx": "a3ee3a985cddd404a8bb877cf3e8f25a525a6e20abef350a5e466305adf15f22"
+    },
+    {
+      "ts": "2025-10-24T17:51:26.946586",
+      "mode": "baseline_set",
+      "baseline_usd": 100.0,
+      "tx": null
+    },
+    {
+      "ts": "2025-10-24T17:51:54.328364",
+      "mode": "swap_exact_in",
+      "token_in": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "token_out": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "amount_in_raw": 50000000,
+      "min_out_raw": 3857476439033090,
+      "fee": 3000,
+      "slippage_bps": 50,
+      "tx": "979700b6cae8d15a8eae6055ad249369da64616e61cdd06846d027b99830cd2f",
+      "gas_used": 165023,
+      "effective_gas_price_wei": 1000009,
+      "gas_eth": 1.65024485207e-07,
+      "gas_usd": 0.002119557986100353
+    },
+    {
+      "ts": "2025-10-24T18:56:53.947939",
+      "mode": "swap_exact_in",
+      "token_in": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "token_out": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "amount_in_raw": 10000000,
+      "min_out_raw": 767906674322963,
+      "fee_used": 500,
+      "tx": "ce98eee600b9a90e482b63dabd2edc99beadd93541843d6a018a7251cb769ad5",
+      "gas_used": 139225,
+      "effective_gas_price_wei": 1000000,
+      "gas_eth": 1.39225e-07,
+      "gas_usd": 0.0018153905143911597
+    },
+    {
+      "ts": "2025-10-24T19:23:54.353121",
+      "mode": "swap_exact_in",
+      "token_in": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "token_out": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "resolved_amount_mode": "token",
+      "amount_in_raw": 4648626244578949,
+      "min_out_raw": 60039762,
+      "fee_used": 500,
+      "slippage_bps": 50,
+      "tx": "6678ca25f8dc9c6a2e066a088f313cdda215a7f3f1e725743bfbfc7d355c53f3",
+      "gas_used": 128994,
+      "effective_gas_price_wei": 1000009,
+      "gas_eth": 1.28995160946e-07,
+      "gas_usd": 0.0016820010169418522
+    }
+  ],
+  "collect_history": [],
+  "deposit_history": [
+    {
+      "ts": "2025-10-24T17:50:22.134255",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 100.0,
+      "amount_raw": 100000000,
+      "tx": "a3ee3a985cddd404a8bb877cf3e8f25a525a6e20abef350a5e466305adf15f22"
+    }
+  ],
+  "error_history": [],
+  "vault_initial_usd": 100.0,
+  "baseline_set_ts": "2025-10-24T17:51:26.946238"
+}

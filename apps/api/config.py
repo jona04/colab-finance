@@ -39,8 +39,8 @@ def get_settings() -> Settings:
         RPC_URL_DEFAULT=os.environ["RPC_SEPOLIA"],
         STABLE_TOKEN_ADDRESSES=os.environ.get("STABLE_TOKEN_ADDRESSES",[]),
         
-        UNI_V3_ROUTER=os.environ.get("UNI_V3_ROUTER",""),
-        UNI_V3_QUOTER=os.environ.get("UNI_V3_QUOTER",""),
+        UNI_V3_ROUTER=os.environ.get("UNI_V3_ROUTER","0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E"),
+        UNI_V3_QUOTER=os.environ.get("UNI_V3_QUOTER","0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3"),
         DEFAULT_SWAP_POOL_FEE=int(os.environ.get("DEFAULT_SWAP_POOL_FEE", 3000))
         
         # twap_window=int(os.environ.get("TWAP_WINDOW", "60")),

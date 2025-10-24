@@ -168,12 +168,12 @@ contract SingleUserVaultV2 is Ownable, ReentrancyGuard {
         // approve router to pull tokenIn from this vault
         _approveIfNeeded(tokenIn, router, amountIn);
 
-        ISwapRouterV3Minimal.ExactInputSingleParams memory p = ISwapRouterV3Minimal.ExactInputSingleParams({
+        ISwapRouterV3Minimal.ExactInputSingleParams memory p =
+        ISwapRouterV3Minimal.ExactInputSingleParams({
             tokenIn: tokenIn,
             tokenOut: tokenOut,
             fee: fee,
             recipient: address(this),
-            deadline: block.timestamp + 900,
             amountIn: amountIn,
             amountOutMinimum: amountOutMinimum,
             sqrtPriceLimitX96: sqrtPriceLimitX96

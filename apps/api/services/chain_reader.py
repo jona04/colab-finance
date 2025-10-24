@@ -35,7 +35,7 @@ def _pct_from_dtick(d: int) -> float:
     factor = pow(1.0001, abs(d))
     return (factor - 1.0) * 100.0
 
-def _sqrtPriceX96_to_price_t1_per_t0(sqrtP: int, dec0: int, dec1: int) -> float:
+def sqrtPriceX96_to_price_t1_per_t0(sqrtP: int, dec0: int, dec1: int) -> float:
     """
     Returns price as token1 per token0 (e.g., USDC per WETH if token0=WETH, token1=USDC).
     """
@@ -119,7 +119,7 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]
     cooldown_active = cooldown_remaining_seconds > 0
 
     # ---- prices
-    p_t1_t0 = _sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)  # token1 per token0
+    p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)  # token1 per token0
     p_t0_t1 = (0.0 if p_t1_t0 == 0 else 1.0 / p_t1_t0)
 
     out_of_range = tick < lower or tick >= upper

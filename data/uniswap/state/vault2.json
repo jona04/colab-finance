@@ -83,6 +83,26 @@
       "mode": "exit_withdraw",
       "to": "0x71955d4098cD2C0737184Ec881016a538ed9A90D",
       "tx": "ccf4d45d02f67108181e551c453e0005d975d490cb1d3f571b64aab8dc3c82c7"
+    },
+    {
+      "ts": "2025-10-24T16:48:01.857976",
+      "mode": "deposit",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 150.0,
+      "tx": "b4dbaa9ca48949015f44c4f679fa9c47c1901d2a3a4a4ca1314c5e3e1bd7c78f"
+    },
+    {
+      "ts": "2025-10-24T17:47:28.143553",
+      "mode": "open",
+      "lower": 182000,
+      "upper": 183000,
+      "tx": "5096225d53cf8bf8a4daf5727f5461cc7adf684e3a81e5e4de8a8de3218afdaa"
+    },
+    {
+      "ts": "2025-10-24T17:48:04.151273",
+      "mode": "exit_withdraw",
+      "to": "0x71955d4098cD2C0737184Ec881016a538ed9A90D",
+      "tx": "f59aceb36437a416da8191914725eb09f7ad9b114ae0e77ec8ae300e7961249e"
     }
   ],
   "collect_history": [
@@ -115,6 +135,13 @@
       "amount_human": 780.0,
       "amount_raw": 780000000,
       "tx": "a8ea5c66ee9f68709eb31574cea26160f05d9b431e92d175ca7a7e9165296acc"
+    },
+    {
+      "ts": "2025-10-24T16:48:01.857387",
+      "token": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "amount_human": 150.0,
+      "amount_raw": 150000000,
+      "tx": "b4dbaa9ca48949015f44c4f679fa9c47c1901d2a3a4a4ca1314c5e3e1bd7c78f"
     }
   ],
   "error_history": [],

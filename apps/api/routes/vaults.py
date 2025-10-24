@@ -1,3 +1,4 @@
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ from ..domain.models import (
 )
 from ..services import state_repo, vault_repo
 from ..services.tx_service import TxService
-from ..services.chain_reader import compute_status
+from ..services.chain_reader import USD_SYMBOLS, _value_usd, compute_status, sqrtPriceX96_to_price_t1_per_t0
 from ..adapters.uniswap_v3 import UniswapV3Adapter
 from ..adapters.aerodrome import AerodromeAdapter
 from ..domain.models import StakeRequest, UnstakeRequest, ClaimRewardsRequest
@@ -589,42 +590,97 @@ def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
 def swap_quote(dex: str, alias: str, req: SwapQuoteRequest):
     v = vault_repo.get_vault(dex, alias)
     if not v: raise HTTPException(404, "Unknown alias")
-    # if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
 
     s = get_settings()
     if not s.UNI_V3_QUOTER:
         raise HTTPException(500, "UNI_V3_QUOTER not configured")
 
     ad  = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
-    meta = ad.pool_meta()
+    
     dec_in = int(ad.erc20(req.token_in).functions.decimals().call())
     dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
-
     amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
-    fee = int(req.fee or get_settings().DEFAULT_SWAP_POOL_FEE)
-    q = ad.quoter(s.UNI_V3_QUOTER)
+    
+    if amount_in_raw <= 0:
+        raise HTTPException(400, "amount_in must be > 0")
 
-    # QuoterV2: returns (amountOut, sqrtPriceX96After, ticksCrossed, gasEstimate)
-    res = q.functions.quoteExactInputSingle(req.token_in, req.token_out, amount_in_raw, fee, int(req.sqrt_price_limit_x96 or 0)).call()
-    amount_out_raw = int(res[0])
-    amount_out_h = amount_out_raw / (10 ** dec_out)
+    quoter = ad.quoter(s.UNI_V3_QUOTER)
+    
+    fee_candidates = [500, 3000, 10000] if not req.fee else [int(req.fee)]
+    best = None
+        
+    for fee in fee_candidates:
+        params = {
+            "tokenIn": req.token_in,
+            "tokenOut": req.token_out,
+            "amountIn": amount_in_raw,
+            "fee": fee,
+            "sqrtPriceLimitX96": int(req.sqrt_price_limit_x96 or 0),
+        }
+        try:
+            amount_out_raw, sqrt_after, ticks_crossed, gas_est = quoter.functions.quoteExactInputSingle(params).call()
+            if amount_out_raw > 0:
+                if not best or amount_out_raw > best["amount_out_raw"]:
+                    best = dict(
+                        fee=fee,
+                        amount_out_raw=amount_out_raw,
+                        sqrt_after=sqrt_after,
+                        ticks_crossed=ticks_crossed,
+                        gas_est=gas_est,
+                    )
+        except:
+            continue
+    
+    if not best:
+        raise HTTPException(400, "No route available (all fee tiers reverted)")
+    
+    # --- Gas to ETH & USD (same logic as before)
+    gas_price_wei = int(ad.w3.eth.gas_price)
+    gas_eth = float((Decimal(best["gas_est"]) * Decimal(gas_price_wei)) / Decimal(10**18))
+
+    meta = ad.pool_meta()
+    dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
+    sym0, sym1 = str(meta["sym0"]).upper(), str(meta["sym1"]).upper()
+    t0, t1 = meta["token0"], meta["token1"]
+
+    sqrtP, _ = ad.slot0()
+    p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)
+
+    def _is_usdc(s): return s in USD_SYMBOLS
+    def _is_eth(s): return s in {"WETH","ETH"}
+
+    usdc_per_eth = None
+    if _is_usdc(sym1) and _is_eth(sym0): usdc_per_eth = p_t1_t0
+    elif _is_usdc(sym0) and _is_eth(sym1): usdc_per_eth = (0 if p_t1_t0==0 else 1/p_t1_t0)
+
+    gas_usd = (gas_eth * float(usdc_per_eth)) if usdc_per_eth else None
+
+    # --- Valoração pós swap (valor percebido "final")
+    amount_out_human = float(best["amount_out_raw"]) / (10 ** dec_out)
+    value_at_sqrt_after_usd = _value_usd(
+        0, amount_out_human, p_t1_t0, 1/p_t1_t0, sym0, sym1, t0, t1
+    )
 
     return {
+        "best_fee": best["fee"],
         "amount_in_raw": amount_in_raw,
-        "amount_out_raw": amount_out_raw,
+        "amount_out_raw": best["amount_out_raw"],
         "amount_in": float(req.amount_in),
-        "amount_out": float(amount_out_h),
-        "fee": fee,
-        "sqrt_price_limit_x96_after": int(res[1]),
-        "ticks_crossed": int(res[2]),
-        "gas_estimate": int(res[3]),
+        "amount_out": amount_out_human,
+        "sqrtPriceX96_after": int(best["sqrt_after"]),
+        "initialized_ticks_crossed": int(best["ticks_crossed"]),
+        "gas_estimate": int(best["gas_est"]),
+        "gas_price_wei": gas_price_wei,
+        "gas_price_gwei": float(Decimal(gas_price_wei) / Decimal(10**9)),
+        "gas_eth": float(gas_eth),
+        "gas_usd": float(gas_usd) if gas_usd else None,
+        "value_at_sqrt_after_usd": float(value_at_sqrt_after_usd),
     }
 
 @router.post("/vaults/{dex}/{alias}/swap/exact-in")
 def swap_exact_in(dex: str, alias: str, req: SwapExactInRequest):
     v = vault_repo.get_vault(dex, alias)
     if not v: raise HTTPException(404, "Unknown alias")
-    if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
 
     s = get_settings()
     if not s.UNI_V3_ROUTER or not s.UNI_V3_QUOTER:
@@ -636,23 +692,74 @@ def swap_exact_in(dex: str, alias: str, req: SwapExactInRequest):
     # decimals
     dec_in = int(ad.erc20(req.token_in).functions.decimals().call())
     dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
-    amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
+    
+    # --- resolver amount_in_raw a partir de amount_in (token) OU amount_in_usd
+    def _is_usdc(sym: str) -> bool: return sym.upper() in USD_SYMBOLS
+    def _is_eth(sym: str)  -> bool: return sym.upper() in {"WETH","ETH"}
+
+    amount_in_raw = None
+    resolved_mode = None  # "token" ou "usd"
+    
+    if req.amount_in is not None:
+        amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
+        resolved_mode = "token"
+    elif req.amount_in_usd is not None:
+        # Só convertemos USD -> token quando token_in é WETH/ETH ou USDC
+        # Pegamos USDC/ETH do pool do vault (se for USDC↔(W)ETH); caso contrário, 400.
+        meta = ad.pool_meta()
+        sym0, sym1 = meta["sym0"], meta["sym1"]
+        dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
+        sqrtP, _ = ad.slot0()
+        p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)  # token1/token0
+
+        usdc_per_eth = None
+        if _is_usdc(sym1) and _is_eth(sym0):
+            usdc_per_eth = p_t1_t0
+        elif _is_usdc(sym0) and _is_eth(sym1):
+            usdc_per_eth = (0.0 if p_t1_t0 == 0 else 1.0 / p_t1_t0)
+
+        # determinar se token_in é WETH/ETH ou USDC
+        in_sym = ad.erc20(req.token_in).functions.symbol().call()
+        if _is_eth(in_sym):
+            if not usdc_per_eth:
+                raise HTTPException(400, "Não foi possível obter USDC/ETH a partir do pool do vault.")
+            # USD -> WETH:  amount_eth = USD / (USDC/ETH)
+            amount_in_token = float(req.amount_in_usd) / float(usdc_per_eth)
+            amount_in_raw = int(amount_in_token * (10 ** dec_in))
+            resolved_mode = "usd"
+        elif _is_usdc(in_sym):
+            # USD -> USDC é 1:1
+            amount_in_raw = int(float(req.amount_in_usd) * (10 ** dec_in))
+            resolved_mode = "usd"
+        else:
+            raise HTTPException(400, "amount_in_usd só é suportado quando token_in é WETH/ETH ou USDC.")
+    else:
+        raise HTTPException(400, "Informe amount_in (token) ou amount_in_usd.")
+
     if amount_in_raw <= 0:
-        raise HTTPException(400, "amount_in must be > 0")
+        raise HTTPException(400, "amount_in deve ser > 0")
+
 
     # sanity: vault balance
     bal_in = int(ad.erc20(req.token_in).functions.balanceOf(v["address"]).call())
     if bal_in < amount_in_raw:
         raise HTTPException(400, f"insufficient vault balance: have {bal_in}, need {amount_in_raw}")
 
-    # quote for minOut
-    fee = int(req.fee or get_settings().DEFAULT_POOL_FEE)
-    q = ad.quoter(s.UNI_V3_QUOTER)
-    quoted = q.functions.quoteExactInputSingle(req.token_in, req.token_out, amount_in_raw, fee, int(req.sqrt_price_limit_x96 or 0)).call()
-    amount_out_raw = int(quoted[0])
+    # First call the quote endpoint function to auto-pick fee
+    fee = int(req.fee) if req.fee is not None else None
+    quote = swap_quote(dex, alias, SwapQuoteRequest(
+        alias=alias,
+        token_in=req.token_in,
+        token_out=req.token_out,
+        amount_in=(float(req.amount_in) if resolved_mode=="token" else float(amount_in_raw) / (10 ** dec_in)),
+        fee=fee,
+        sqrt_price_limit_x96=req.sqrt_price_limit_x96
+    ))
+    fee_used = int(quote["best_fee"])
+    amount_out_raw = int(quote["amount_out_raw"])
     if amount_out_raw <= 0:
         raise HTTPException(400, "quoter returned 0")
-
+    
     # slippage
     bps = max(0, int(req.slippage_bps))
     min_out_raw = amount_out_raw * (10_000 - bps) // 10_000
@@ -661,25 +768,65 @@ def swap_exact_in(dex: str, alias: str, req: SwapExactInRequest):
         router=s.UNI_V3_ROUTER,
         token_in=req.token_in,
         token_out=req.token_out,
-        fee=fee,
+        fee=fee_used,
         amount_in_raw=amount_in_raw,
         min_out_raw=min_out_raw,
         sqrt_price_limit_x96=int(req.sqrt_price_limit_x96 or 0),
     )
 
-    txh = TxService(v.get("rpc_url")).send(fn)
+    txs = TxService(v.get("rpc_url"))
+    txh = txs.send(fn)
 
-    # opcional: gravar no history do vault
+    # Real gas spent
+    gas_used = eff_price_wei = gas_eth = gas_usd = None
+    try:
+        rcpt = ad.w3.eth.wait_for_transaction_receipt(txh)
+        gas_used = int(rcpt["gasUsed"])
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+        if eff_price_wei and gas_used:
+            gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
+            meta2 = ad.pool_meta()
+            sym0b, sym1b = meta2["sym0"].upper(), meta2["sym1"].upper()
+            dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+            sqrtPb, _ = ad.slot0()
+            p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+            if _is_usdc(sym1b) and _is_eth(sym0b):
+                gas_usd = gas_eth * p_t1_t0b
+            elif _is_usdc(sym0b) and _is_eth(sym1b):
+                gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0 / p_t1_t0b)
+    except Exception:
+        pass
+
+    # history
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "swap_exact_in",
         "token_in": req.token_in,
         "token_out": req.token_out,
+        "resolved_amount_mode": resolved_mode,  # "token" ou "usd"
         "amount_in_raw": amount_in_raw,
         "min_out_raw": min_out_raw,
-        "fee": fee,
+        "fee_used": fee_used,
         "slippage_bps": bps,
         "tx": txh,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
     })
 
-    return {"tx": txh, "quoted_out_raw": amount_out_raw, "min_out_raw": min_out_raw}
+    return {
+        "tx": txh,
+        "fee_used": fee_used,
+        "resolved_amount_mode": resolved_mode,
+        "amount_in_raw": amount_in_raw,
+        "quoted_out_raw": amount_out_raw,
+        "min_out_raw": min_out_raw,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "effective_gas_price_gwei": (float(eff_price_wei)/1e9 if eff_price_wei else None),
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
+    }
