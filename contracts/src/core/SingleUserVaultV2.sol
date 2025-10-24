@@ -6,6 +6,7 @@ import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/Safe
 import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../interfaces/IConcentratedLiquidityAdapter.sol";
+import {ISwapRouterV3Minimal} from "../interfaces/ISwapRouterV3Minimal.sol";
 
 /**
  * @title SingleUserVaultV2
@@ -26,7 +27,8 @@ contract SingleUserVaultV2 is Ownable, ReentrancyGuard {
     event Collected(uint256 amount0, uint256 amount1);
     event Staked();
     event Unstaked();
-
+    event Swapped(address indexed router, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut);
+    
     /// @dev OZ v5 Ownable requires the base constructor argument.
     /// Pass the initial owner at deployment time.
     constructor(address _owner) Ownable(_owner) {
@@ -140,6 +142,52 @@ contract SingleUserVaultV2 is Ownable, ReentrancyGuard {
         (a0, a1) = adapter.collectToVault(address(this));
         emit Collected(a0, a1);
     }
+
+    /**
+     * @notice Swap exact amountIn of tokenIn -> tokenOut via Uniswap v3 Router, keeping proceeds in the vault.
+     * @dev OnlyOwner, nonReentrant. Approves just-in-time the router, then resets approval to 0.
+     * @param router Uniswap v3 router address (e.g., SwapRouter02 on Base)
+     * @param tokenIn Input token address (must be in the vault)
+     * @param tokenOut Output token address
+     * @param fee Pool fee tier (e.g., 500, 3000, 10000)
+     * @param amountIn Exact input amount (raw units)
+     * @param amountOutMinimum Minimum acceptable output (raw units) for slippage protection
+     * @param sqrtPriceLimitX96 Optional price limit (usually 0)
+     */
+    function swapExactIn(
+        address router,
+        address tokenIn,
+        address tokenOut,
+        uint24  fee,
+        uint256 amountIn,
+        uint256 amountOutMinimum,
+        uint160 sqrtPriceLimitX96
+    ) external onlyOwner nonReentrant returns (uint256 amountOut) {
+        require(router != address(0), "router=0");
+        require(amountIn > 0, "amountIn=0");
+        // approve router to pull tokenIn from this vault
+        _approveIfNeeded(tokenIn, router, amountIn);
+
+        ISwapRouterV3Minimal.ExactInputSingleParams memory p = ISwapRouterV3Minimal.ExactInputSingleParams({
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            fee: fee,
+            recipient: address(this),
+            deadline: block.timestamp + 900,
+            amountIn: amountIn,
+            amountOutMinimum: amountOutMinimum,
+            sqrtPriceLimitX96: sqrtPriceLimitX96
+        });
+
+        amountOut = ISwapRouterV3Minimal(router).exactInputSingle(p);
+
+        // reset approval (defensive)
+        IERC20(tokenIn).forceApprove(router, 0);
+
+        emit Swapped(router, tokenIn, tokenOut, amountIn, amountOut);
+    }
+
+
 
     // ===== staking (optional) =====
 

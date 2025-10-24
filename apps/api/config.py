@@ -8,6 +8,10 @@ load_dotenv()
 
 @dataclass
 class Settings:
+    UNI_V3_ROUTER: str  # ex.: Base SwapRouter02
+    UNI_V3_QUOTER: str  # ex.: Base QuoterV2
+    DEFAULT_SWAP_POOL_FEE: int
+    
     # signing / chain
     RPC_URL_DEFAULT: str
     PRIVATE_KEY: str  # hex 0x...
@@ -25,7 +29,7 @@ class Settings:
     # generic
     ENV: str = Field(default="dev")
     LOG_LEVEL: str = Field(default="INFO")
-    
+
     STABLE_TOKEN_ADDRESSES: list[str] = field(default_factory=list)
     
 @lru_cache()
@@ -33,7 +37,11 @@ def get_settings() -> Settings:
     return Settings(
         PRIVATE_KEY=os.environ.get("PRIVATE_KEY", ""),  # keep empty when missing
         RPC_URL_DEFAULT=os.environ["RPC_SEPOLIA"],
-        STABLE_TOKEN_ADDRESSES=os.environ["STABLE_TOKEN_ADDRESSES"]
+        STABLE_TOKEN_ADDRESSES=os.environ.get("STABLE_TOKEN_ADDRESSES",[]),
+        
+        UNI_V3_ROUTER=os.environ.get("UNI_V3_ROUTER",""),
+        UNI_V3_QUOTER=os.environ.get("UNI_V3_QUOTER",""),
+        DEFAULT_SWAP_POOL_FEE=int(os.environ.get("DEFAULT_SWAP_POOL_FEE", 3000))
         
         # twap_window=int(os.environ.get("TWAP_WINDOW", "60")),
         # max_twap_dev_ticks=int(os.environ.get("MAX_TWAP_DEVIATION_TICKS", "50")),

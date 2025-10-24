@@ -41,7 +41,7 @@ ABI_NFPM = [
        "type":"tuple","name":"params"}],
      "stateMutability":"nonpayable","type":"function"},
 ]
-# minimal vault ABI (adapt names if your contract differs)
+
 ABI_VAULT = [
     {"name":"pool","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"nfpm","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
@@ -57,12 +57,20 @@ ABI_VAULT = [
     {"name":"maxWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"twapWindow","outputs":[{"type":"uint32"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"maxTwapDeviationTicks","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
-    # mutations (adjust names if needed)
     {"name":"openInitialPosition","outputs":[],"inputs":[{"type":"int24"},{"type":"int24"}],"stateMutability":"nonpayable","type":"function"},
     {"name":"rebalanceWithCaps","outputs":[],"inputs":[{"type":"int24"},{"type":"int24"},{"type":"uint256"},{"type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
     {"name":"exitPositionToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
     {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[{"type":"address"}],"stateMutability":"nonpayable","type":"function"},  # <-- address to    
     {"name":"collectToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
+    {"name":"swapExactIn","outputs":[{"type":"uint256"}],"inputs":[
+        {"type":"address","name":"router"},
+        {"type":"address","name":"tokenIn"},
+        {"type":"address","name":"tokenOut"},
+        {"type":"uint24","name":"fee"},
+        {"type":"uint256","name":"amountIn"},
+        {"type":"uint256","name":"amountOutMinimum"},
+        {"type":"uint160","name":"sqrtPriceLimitX96"}
+    ],"stateMutability":"nonpayable","type":"function"},
 ]
 
 # ABI mínimo do adapter (universal p/ Uni e Aerodrome)
@@ -78,6 +86,48 @@ ABI_ADAPTER = [
     {"name":"gauge","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
 ]
 
+ABI_SWAP_ROUTER_MIN = [
+    {
+      "name":"exactInputSingle",
+      "type":"function",
+      "stateMutability":"payable",
+      "inputs":[
+        {"name":"params","type":"tuple","components":[
+          {"name":"tokenIn","type":"address"},
+          {"name":"tokenOut","type":"address"},
+          {"name":"fee","type":"uint24"},
+          {"name":"recipient","type":"address"},
+          {"name":"deadline","type":"uint256"},
+          {"name":"amountIn","type":"uint256"},
+          {"name":"amountOutMinimum","type":"uint256"},
+          {"name":"sqrtPriceLimitX96","type":"uint160"}
+        ]}
+      ],
+      "outputs":[{"name":"amountOut","type":"uint256"}]
+    }
+]
+
+ABI_QUOTER_V2_MIN = [
+  {
+    "name":"quoteExactInputSingle",
+    "type":"function",
+    "stateMutability":"view",
+    "inputs":[
+      {"name":"tokenIn","type":"address"},
+      {"name":"tokenOut","type":"address"},
+      {"name":"amountIn","type":"uint256"},
+      {"name":"fee","type":"uint24"},
+      {"name":"sqrtPriceLimitX96","type":"uint160"}
+    ],
+    "outputs":[
+      {"name":"amountOut","type":"uint256"},
+      {"name":"sqrtPriceX96After","type":"uint160"},
+      {"name":"initializedTicksCrossed","type":"uint32"},
+      {"name":"gasEstimate","type":"uint256"}
+    ]
+  }
+]
+
 U128_MAX = (1<<128) - 1
 
 class UniswapV3Adapter(DexAdapter):
@@ -87,13 +137,17 @@ class UniswapV3Adapter(DexAdapter):
     def erc20_abi(self) -> list: return ABI_ERC20
     def nfpm_abi(self) -> list:  return ABI_NFPM
     def vault_abi(self) -> list: return ABI_VAULT
-
+    def quoter_abi(self) -> list: return ABI_QUOTER_V2_MIN
+    
     def pool_contract(self):
         return self.w3.eth.contract(address=Web3.to_checksum_address(self.pool), abi=self.pool_abi())
 
     def nfpm_contract(self):
         return self.w3.eth.contract(address=Web3.to_checksum_address(self.nfpm), abi=self.nfpm_abi()) if self.nfpm else None
 
+    def quoter(self, addr: str):
+        return self.w3.eth.contract(address=Web3.to_checksum_address(addr), abi=self.quoter_abi())
+    
     # ---------- reads ----------
     def slot0(self) -> Tuple[int,int]:
         s = self.pool_contract().functions.slot0().call()
@@ -234,3 +288,16 @@ class UniswapV3Adapter(DexAdapter):
         # TODO: if have a factory, implement here
         raise NotImplementedError("Deployment via adapter not implemented (use factory when available).")
 
+    def fn_vault_swap_exact_in(self, router: str, token_in: str, token_out: str,
+                               fee: int, amount_in_raw: int,
+                               min_out_raw: int, sqrt_price_limit_x96: int = 0):
+        # chama a função do VaultV2
+        return self.vault.functions.swapExactIn(
+            Web3.to_checksum_address(router),
+            Web3.to_checksum_address(token_in),
+            Web3.to_checksum_address(token_out),
+            int(fee),
+            int(amount_in_raw),
+            int(min_out_raw),
+            int(sqrt_price_limit_x96)
+        )

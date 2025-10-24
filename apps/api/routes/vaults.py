@@ -4,14 +4,13 @@ from pathlib import Path
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Body
 from web3 import Web3
+
+from ..domain.swap import SwapExactInRequest, SwapQuoteRequest
 from ..config import get_settings
 from ..domain.models import (
-    VaultList, VaultRow, AddVaultRequest, SetPoolRequest,
+    DexName, VaultList, VaultRow, AddVaultRequest, SetPoolRequest,
     DeployVaultRequest, OpenRequest, RebalanceRequest, WithdrawRequest,
-    DepositRequest, CollectRequest, BaselineRequest, StatusResponse,
-    PricesBlock, PricesPanel, UsdPanelModel,
-    HoldingsSide, HoldingsMeta, HoldingsBlock,
-    FeesUncollected, StatusCore
+    DepositRequest, CollectRequest, BaselineRequest, StatusResponse, StatusCore
 )
 from ..services import state_repo, vault_repo
 from ..services.tx_service import TxService
@@ -32,7 +31,7 @@ def _adapter_for(dex: str, pool: str, nfpm: str | None, vault: str, rpc_url: str
     raise HTTPException(400, "Unsupported DEX")
 
 @router.get("/vaults/{dex}", response_model=VaultList)
-def list_vaults(dex: str):
+def list_vaults(dex: DexName):
     d = vault_repo.list_vaults(dex)
     rows = []
     for alias, v in d.get("vaults", {}).items():
@@ -62,11 +61,15 @@ def add_vault(dex: str, req: AddVaultRequest):
     
     return {"ok": True}
 
-@router.post("/vaults/{dex}/set-pool")
-def set_pool(dex: str, req: SetPoolRequest):
+@router.post("/vaults/{dex}/{alias}/set-pool")
+def set_pool(dex: str, alias: str, req: SetPoolRequest):
+    v = vault_repo.get_vault(dex, alias)
+    if not v: raise HTTPException(404, "Unknown alias")
+    if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
+    
     vault_repo.set_pool(dex, req.alias, req.pool)
     
-    state_repo.ensure_state_initialized(dex, req.alias)
+    state_repo.ensure_state_initialized(dex, req.alias, vault_address=v["address"])
     state_repo.update_state(dex, req.alias, {"pool": req.pool})
     state_repo.append_history(dex, req.alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
@@ -581,3 +584,102 @@ def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
         "tx": txh
     })
     return {"tx": txh, "mode": req.mode}
+
+@router.post("/vaults/{dex}/{alias}/swap/quote")
+def swap_quote(dex: str, alias: str, req: SwapQuoteRequest):
+    v = vault_repo.get_vault(dex, alias)
+    if not v: raise HTTPException(404, "Unknown alias")
+    # if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
+
+    s = get_settings()
+    if not s.UNI_V3_QUOTER:
+        raise HTTPException(500, "UNI_V3_QUOTER not configured")
+
+    ad  = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    meta = ad.pool_meta()
+    dec_in = int(ad.erc20(req.token_in).functions.decimals().call())
+    dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
+
+    amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
+    fee = int(req.fee or get_settings().DEFAULT_SWAP_POOL_FEE)
+    q = ad.quoter(s.UNI_V3_QUOTER)
+
+    # QuoterV2: returns (amountOut, sqrtPriceX96After, ticksCrossed, gasEstimate)
+    res = q.functions.quoteExactInputSingle(req.token_in, req.token_out, amount_in_raw, fee, int(req.sqrt_price_limit_x96 or 0)).call()
+    amount_out_raw = int(res[0])
+    amount_out_h = amount_out_raw / (10 ** dec_out)
+
+    return {
+        "amount_in_raw": amount_in_raw,
+        "amount_out_raw": amount_out_raw,
+        "amount_in": float(req.amount_in),
+        "amount_out": float(amount_out_h),
+        "fee": fee,
+        "sqrt_price_limit_x96_after": int(res[1]),
+        "ticks_crossed": int(res[2]),
+        "gas_estimate": int(res[3]),
+    }
+
+@router.post("/vaults/{dex}/{alias}/swap/exact-in")
+def swap_exact_in(dex: str, alias: str, req: SwapExactInRequest):
+    v = vault_repo.get_vault(dex, alias)
+    if not v: raise HTTPException(404, "Unknown alias")
+    if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
+
+    s = get_settings()
+    if not s.UNI_V3_ROUTER or not s.UNI_V3_QUOTER:
+        raise HTTPException(500, "UNI_V3_ROUTER/UNI_V3_QUOTER not configured")
+
+    state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
+    ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+
+    # decimals
+    dec_in = int(ad.erc20(req.token_in).functions.decimals().call())
+    dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
+    amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
+    if amount_in_raw <= 0:
+        raise HTTPException(400, "amount_in must be > 0")
+
+    # sanity: vault balance
+    bal_in = int(ad.erc20(req.token_in).functions.balanceOf(v["address"]).call())
+    if bal_in < amount_in_raw:
+        raise HTTPException(400, f"insufficient vault balance: have {bal_in}, need {amount_in_raw}")
+
+    # quote for minOut
+    fee = int(req.fee or get_settings().DEFAULT_POOL_FEE)
+    q = ad.quoter(s.UNI_V3_QUOTER)
+    quoted = q.functions.quoteExactInputSingle(req.token_in, req.token_out, amount_in_raw, fee, int(req.sqrt_price_limit_x96 or 0)).call()
+    amount_out_raw = int(quoted[0])
+    if amount_out_raw <= 0:
+        raise HTTPException(400, "quoter returned 0")
+
+    # slippage
+    bps = max(0, int(req.slippage_bps))
+    min_out_raw = amount_out_raw * (10_000 - bps) // 10_000
+
+    fn = ad.fn_vault_swap_exact_in(
+        router=s.UNI_V3_ROUTER,
+        token_in=req.token_in,
+        token_out=req.token_out,
+        fee=fee,
+        amount_in_raw=amount_in_raw,
+        min_out_raw=min_out_raw,
+        sqrt_price_limit_x96=int(req.sqrt_price_limit_x96 or 0),
+    )
+
+    txh = TxService(v.get("rpc_url")).send(fn)
+
+    # opcional: gravar no history do vault
+    state_repo.append_history(dex, alias, "exec_history", {
+        "ts": datetime.utcnow().isoformat(),
+        "mode": "swap_exact_in",
+        "token_in": req.token_in,
+        "token_out": req.token_out,
+        "amount_in_raw": amount_in_raw,
+        "min_out_raw": min_out_raw,
+        "fee": fee,
+        "slippage_bps": bps,
+        "tx": txh,
+    })
+
+    return {"tx": txh, "quoted_out_raw": amount_out_raw, "min_out_raw": min_out_raw}
