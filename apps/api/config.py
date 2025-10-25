@@ -8,6 +8,10 @@ load_dotenv()
 
 @dataclass
 class Settings:
+    AERO_QUOTER: str          # QuoterV2 do Aerodrome
+    AERO_ROUTER: str          # SwapRouter do Aerodrome
+    AERO_TICK_SPACINGS: str
+    
     UNI_V3_ROUTER: str  # ex.: Base SwapRouter02
     UNI_V3_QUOTER: str  # ex.: Base QuoterV2
     DEFAULT_SWAP_POOL_FEE: int
@@ -35,6 +39,10 @@ class Settings:
 @lru_cache()
 def get_settings() -> Settings:
     return Settings(
+        AERO_QUOTER = os.getenv("AERO_QUOTER","0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0"),
+        AERO_ROUTER = os.getenv("AERO_ROUTER", "0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5"),
+        AERO_TICK_SPACINGS = os.getenv("AERO_TICK_SPACINGS","1,10,100"),
+        
         PRIVATE_KEY=os.environ.get("PRIVATE_KEY", ""),  # keep empty when missing
         RPC_URL_DEFAULT=os.environ["RPC_SEPOLIA"],
         STABLE_TOKEN_ADDRESSES=os.environ.get("STABLE_TOKEN_ADDRESSES",[]),

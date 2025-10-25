@@ -32,6 +32,51 @@ ABI_VAULT = [
     {"name":"stake", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
     {"name":"unstake", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
     {"name":"claimRewards", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
+    {"name":"swapExactInAero","outputs":[{"type":"uint256"}],"inputs":[
+        {"type":"address","name":"router"},
+        {"type":"address","name":"tokenIn"},
+        {"type":"address","name":"tokenOut"},
+        {"type":"int24","name":"tickSpacing"},
+        {"type":"uint256","name":"amountIn"},
+        {"type":"uint256","name":"amountOutMinimum"},
+        {"type":"uint160","name":"sqrtPriceLimitX96"}
+    ],"stateMutability":"nonpayable","type":"function"},
+]
+
+ABI_AERO_QUOTER = [
+    {"inputs":[{"internalType":"address","name":"_factory","type":"address"},{"internalType":"address","name":"_WETH9","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},
+    {"inputs":[],"name":"WETH9","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+    {"inputs":[],"name":"factory","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+    {"inputs":[{"components":[
+        {"internalType":"address","name":"tokenIn","type":"address"},
+        {"internalType":"address","name":"tokenOut","type":"address"},
+        {"internalType":"uint256","name":"amountIn","type":"uint256"},
+        {"internalType":"int24","name":"tickSpacing","type":"int24"},
+        {"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"}],
+      "internalType":"struct IQuoterV2.QuoteExactInputSingleParams","name":"params","type":"tuple"}],
+     "name":"quoteExactInputSingle",
+     "outputs":[
+        {"internalType":"uint256","name":"amountOut","type":"uint256"},
+        {"internalType":"uint160","name":"sqrtPriceX96After","type":"uint160"},
+        {"internalType":"uint32","name":"initializedTicksCrossed","type":"uint32"},
+        {"internalType":"uint256","name":"gasEstimate","type":"uint256"}],
+     "stateMutability":"nonpayable","type":"function"}
+]
+
+ABI_AERO_ROUTER = [
+    {"inputs":[{"internalType":"address","name":"_factory","type":"address"},{"internalType":"address","name":"_WETH9","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},
+    {"inputs":[{"components":[
+        {"internalType":"address","name":"tokenIn","type":"address"},
+        {"internalType":"address","name":"tokenOut","type":"address"},
+        {"internalType":"int24","name":"tickSpacing","type":"int24"},
+        {"internalType":"address","name":"recipient","type":"address"},
+        {"internalType":"uint256","name":"deadline","type":"uint256"},
+        {"internalType":"uint256","name":"amountIn","type":"uint256"},
+        {"internalType":"uint256","name":"amountOutMinimum","type":"uint256"},
+        {"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"}],
+      "internalType":"struct ISwapRouter.ExactInputSingleParams","name":"params","type":"tuple"}],
+     "name":"exactInputSingle","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],
+     "stateMutability":"payable","type":"function"}
 ]
 
 U128_MAX = (1<<128) - 1
@@ -97,7 +142,15 @@ class AerodromeAdapter(DexAdapter):
             return Web3.to_checksum_address(addr)
         except Exception:
             return None
-        
+    
+    def aerodrome_quoter(self, addr: str):
+        return self.w3.eth.contract(address=Web3.to_checksum_address(addr), abi=ABI_AERO_QUOTER)
+
+    def aerodrome_router(self, addr: str):
+        return self.w3.eth.contract(address=Web3.to_checksum_address(addr), abi=ABI_AERO_ROUTER)
+
+    
+    
     # ---- sanity ----
     def assert_is_pool(self):
         try:
@@ -324,3 +377,28 @@ class AerodromeAdapter(DexAdapter):
             return self.vault.functions.claimRewards()
         raise NotImplementedError("Use vault.claimRewards() via fn_claim_rewards()")
     
+    def fn_vault_swap_exact_in_aero(
+        self,
+        router: str,
+        token_in: str,
+        token_out: str,
+        tick_spacing: int,
+        amount_in_raw: int,
+        min_out_raw: int,
+        sqrt_price_limit_x96: int = 0
+    ):
+        """
+        Chama o método específico do Vault V2 (swapExactInAero) para Aerodrome.
+        O Vault faz approve JIT para o router e executa o swap.
+        """
+        if not hasattr(self.vault.functions, "swapExactInAero"):
+            raise NotImplementedError("Vault V2 precisa expor swapExactInAero(...) para Aerodrome.")
+        return self.vault.functions.swapExactInAero(
+            Web3.to_checksum_address(router),
+            Web3.to_checksum_address(token_in),
+            Web3.to_checksum_address(token_out),
+            int(tick_spacing),
+            int(amount_in_raw),
+            int(min_out_raw),
+            int(sqrt_price_limit_x96 or 0)
+        )

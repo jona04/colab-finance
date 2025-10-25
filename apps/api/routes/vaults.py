@@ -7,6 +7,8 @@ import token
 from fastapi import APIRouter, HTTPException, Body
 from web3 import Web3
 
+from ..routes.utils import tick_spacing_candidates
+
 from ..domain.swap import SwapExactInRequest, SwapQuoteRequest
 from ..config import get_settings
 from ..domain.models import (
@@ -531,8 +533,9 @@ def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
     })
     return {"tx": txh, "mode": "adapter"}
 
-@router.post("/vaults/{dex}/{alias}/swap/quote")
-def swap_quote(dex: str, alias: str, req: SwapQuoteRequest):
+@router.post("/vaults/uniswap/{alias}/swap/quote")
+def swap_quote(alias: str, req: SwapQuoteRequest):
+    dex = "uniswap"
     v = vault_repo.get_vault(dex, alias)
     if not v: raise HTTPException(404, "Unknown alias")
 
@@ -622,8 +625,9 @@ def swap_quote(dex: str, alias: str, req: SwapQuoteRequest):
         "value_at_sqrt_after_usd": float(value_at_sqrt_after_usd),
     }
 
-@router.post("/vaults/{dex}/{alias}/swap/exact-in")
-def swap_exact_in(dex: str, alias: str, req: SwapExactInRequest):
+@router.post("/vaults/uniswap/{alias}/swap/exact-in")
+def swap_exact_in(alias: str, req: SwapExactInRequest):
+    dex = "uniswap"
     v = vault_repo.get_vault(dex, alias)
     if not v: raise HTTPException(404, "Unknown alias")
 
@@ -764,6 +768,235 @@ def swap_exact_in(dex: str, alias: str, req: SwapExactInRequest):
     return {
         "tx": txh,
         "fee_used": fee_used,
+        "resolved_amount_mode": resolved_mode,
+        "amount_in_raw": amount_in_raw,
+        "quoted_out_raw": amount_out_raw,
+        "min_out_raw": min_out_raw,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "effective_gas_price_gwei": (float(eff_price_wei)/1e9 if eff_price_wei else None),
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
+    }
+    
+
+@router.post("/vaults/aerodrome/{alias}/swap/quote")
+def aero_swap_quote(alias: str, req: SwapQuoteRequest):
+    v = vault_repo.get_vault("aerodrome", alias)
+    if not v: raise HTTPException(404, "Unknown alias (aerodrome)")
+    s = get_settings()
+    if not s.AERO_QUOTER:
+        raise HTTPException(500, "AERO_QUOTER not configured")
+
+    ad = _adapter_for("aerodrome", v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    quoter = ad.aerodrome_quoter(s.AERO_QUOTER)
+
+    dec_in  = int(ad.erc20(req.token_in).functions.decimals().call())
+    dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
+    amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
+    if amount_in_raw <= 0:
+        raise HTTPException(400, "amount_in must be > 0")
+
+    # candidatos de tickSpacing (equivalente ao "fee" do Uniswap)
+    candidates = [int(req.fee)] if req.fee is not None else tick_spacing_candidates(ad)
+
+    best = None
+    for ts in candidates:
+        params = {
+            "tokenIn": Web3.to_checksum_address(req.token_in),
+            "tokenOut": Web3.to_checksum_address(req.token_out),
+            "amountIn": int(amount_in_raw),
+            "tickSpacing": int(ts),
+            "sqrtPriceLimitX96": int(req.sqrt_price_limit_x96 or 0),
+        }
+        try:
+            amount_out_raw, sqrt_after, ticks_crossed, gas_est = quoter.functions.quoteExactInputSingle(params).call()
+            if amount_out_raw > 0 and (not best or amount_out_raw > best["amount_out_raw"]):
+                best = dict(
+                    tick_spacing=ts,
+                    amount_out_raw=int(amount_out_raw),
+                    sqrt_after=int(sqrt_after),
+                    ticks_crossed=int(ticks_crossed),
+                    gas_est=int(gas_est),
+                )
+        except Exception:
+            continue
+
+    if not best:
+        raise HTTPException(400, "No route available (all tickSpacings reverted)")
+
+    # gas -> ETH/USDC (mesma lógica do Uniswap)
+    gas_price_wei = int(ad.w3.eth.gas_price)
+    gas_eth = float(Decimal(best["gas_est"]) * Decimal(gas_price_wei) / Decimal(10**18))
+
+    meta = ad.pool_meta()
+    dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
+    sym0, sym1 = str(meta["sym0"]).upper(), str(meta["sym1"]).upper()
+    t0, t1 = meta["token0"], meta["token1"]
+
+    sqrtP, _ = ad.slot0()
+    p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)
+
+    def _is_usdc(s): return s in USD_SYMBOLS
+    def _is_eth(s):  return s in {"WETH","ETH"}
+
+    usdc_per_eth = None
+    if _is_usdc(sym1) and _is_eth(sym0): usdc_per_eth = p_t1_t0
+    elif _is_usdc(sym0) and _is_eth(sym1): usdc_per_eth = (0 if p_t1_t0==0 else 1/p_t1_t0)
+
+    gas_usd = (gas_eth * float(usdc_per_eth)) if usdc_per_eth else None
+
+    amount_out_human = float(best["amount_out_raw"]) / (10 ** dec_out)
+    value_at_sqrt_after_usd = _value_usd(
+        0, amount_out_human, p_t1_t0, 1/p_t1_t0, sym0, sym1, t0, t1
+    )
+
+    return {
+        "best_tick_spacing": int(best["tick_spacing"]),
+        "amount_in_raw": amount_in_raw,
+        "amount_out_raw": int(best["amount_out_raw"]),
+        "amount_in": float(req.amount_in),
+        "amount_out": amount_out_human,
+        "sqrtPriceX96_after": int(best["sqrt_after"]),
+        "initialized_ticks_crossed": int(best["ticks_crossed"]),
+        "gas_estimate": int(best["gas_est"]),
+        "gas_price_wei": gas_price_wei,
+        "gas_price_gwei": float(Decimal(gas_price_wei) / Decimal(10**9)),
+        "gas_eth": float(gas_eth),
+        "gas_usd": float(gas_usd) if gas_usd else None,
+        "value_at_sqrt_after_usd": float(value_at_sqrt_after_usd),
+    }
+
+@router.post("/vaults/aerodrome/{alias}/swap/exact-in")
+def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
+    v = vault_repo.get_vault("aerodrome", alias)
+    if not v: raise HTTPException(404, "Unknown alias (aerodrome)")
+    s = get_settings()
+    if not s.AERO_ROUTER or not s.AERO_QUOTER:
+        raise HTTPException(500, "AERO_ROUTER/AERO_QUOTER not configured")
+
+    state_repo.ensure_state_initialized("aerodrome", alias, vault_address=v["address"])
+    ad = _adapter_for("aerodrome", v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+
+    # ---- decimals e resolução de amount_in_raw (igual Uniswap)
+    dec_in  = int(ad.erc20(req.token_in).functions.decimals().call())
+    dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
+
+    def _is_usdc(sym: str) -> bool: return sym.upper() in USD_SYMBOLS
+    def _is_eth(sym: str)  -> bool: return sym.upper() in {"WETH","ETH"}
+
+    if req.amount_in is not None:
+        amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
+        resolved_mode = "token"
+    elif req.amount_in_usd is not None:
+        meta = ad.pool_meta()
+        sym0, sym1 = meta["sym0"], meta["sym1"]
+        dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
+        sqrtP, _ = ad.slot0()
+        p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)
+
+        usdc_per_eth = None
+        if _is_usdc(sym1) and _is_eth(sym0): usdc_per_eth = p_t1_t0
+        elif _is_usdc(sym0) and _is_eth(sym1): usdc_per_eth = (0.0 if p_t1_t0==0 else 1.0/p_t1_t0)
+
+        in_sym = ad.erc20(req.token_in).functions.symbol().call()
+        if _is_eth(in_sym):
+            if not usdc_per_eth:
+                raise HTTPException(400, "Não foi possível obter USDC/ETH a partir do pool do vault.")
+            amount_in_token = float(req.amount_in_usd) / float(usdc_per_eth)
+            amount_in_raw = int(amount_in_token * (10 ** dec_in))
+            resolved_mode = "usd"
+        elif _is_usdc(in_sym):
+            amount_in_raw = int(float(req.amount_in_usd) * (10 ** dec_in))
+            resolved_mode = "usd"
+        else:
+            raise HTTPException(400, "amount_in_usd só é suportado quando token_in é WETH/ETH ou USDC.")
+    else:
+        raise HTTPException(400, "Informe amount_in (token) ou amount_in_usd.")
+
+    if amount_in_raw <= 0:
+        raise HTTPException(400, "amount_in deve ser > 0")
+
+    # saldo do vault
+    bal_in = int(ad.erc20(req.token_in).functions.balanceOf(v["address"]).call())
+    if bal_in < amount_in_raw:
+        raise HTTPException(400, f"insufficient vault balance: have {bal_in}, need {amount_in_raw}")
+
+    # Quote Aerodrome (reuso do endpoint acima para auto-escolher tickSpacing)
+    fee = int(req.fee) if req.fee is not None else None
+    quote = aero_swap_quote(alias, SwapQuoteRequest(
+        alias=alias,
+        token_in=req.token_in,
+        token_out=req.token_out,
+        amount_in=(float(req.amount_in) if resolved_mode=="token" else float(amount_in_raw) / (10 ** dec_in)),
+        fee=fee,
+        sqrt_price_limit_x96=req.sqrt_price_limit_x96
+    ))
+    ts_used = int(quote["best_tick_spacing"])
+    amount_out_raw = int(quote["amount_out_raw"])
+    if amount_out_raw <= 0:
+        raise HTTPException(400, "quoter returned 0")
+
+    # slippage
+    bps = max(0, int(req.slippage_bps))
+    min_out_raw = amount_out_raw * (10_000 - bps) // 10_000
+
+    # tx: vault -> router (vault faz approve + swap)
+    fn = ad.fn_vault_swap_exact_in_aero(
+        router=s.AERO_ROUTER,
+        token_in=req.token_in,
+        token_out=req.token_out,
+        tick_spacing=ts_used,
+        amount_in_raw=amount_in_raw,
+        min_out_raw=min_out_raw,
+        sqrt_price_limit_x96=int(req.sqrt_price_limit_x96 or 0),
+    )
+
+    txs = TxService(v.get("rpc_url"))
+    txh = txs.send(fn)
+
+    # opcional: medir gas real (igual Uniswap)
+    gas_used = eff_price_wei = gas_eth = gas_usd = None
+    try:
+        rcpt = ad.w3.eth.wait_for_transaction_receipt(txh)
+        gas_used = int(rcpt["gasUsed"])
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+        if eff_price_wei and gas_used:
+            gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
+            meta2 = ad.pool_meta()
+            sym0b, sym1b = meta2["sym0"].upper(), meta2["sym1"].upper()
+            dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+            sqrtPb, _ = ad.slot0()
+            p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+            if sym1b in USD_SYMBOLS and sym0b in {"WETH","ETH"}:
+                gas_usd = gas_eth * p_t1_t0b
+            elif sym0b in USD_SYMBOLS and sym1b in {"WETH","ETH"}:
+                gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0 / p_t1_t0b)
+    except Exception:
+        pass
+
+    state_repo.append_history("aerodrome", alias, "exec_history", {
+        "ts": datetime.utcnow().isoformat(),
+        "mode": "swap_exact_in_aero",
+        "token_in": req.token_in,
+        "token_out": req.token_out,
+        "resolved_amount_mode": resolved_mode,
+        "amount_in_raw": amount_in_raw,
+        "min_out_raw": min_out_raw,
+        "tick_spacing_used": ts_used,
+        "slippage_bps": bps,
+        "tx": txh,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
+    })
+
+    return {
+        "tx": txh,
+        "tick_spacing_used": ts_used,
         "resolved_amount_mode": resolved_mode,
         "amount_in_raw": amount_in_raw,
         "quoted_out_raw": amount_out_raw,

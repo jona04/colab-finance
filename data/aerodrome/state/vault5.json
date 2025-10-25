@@ -1,0 +1,121 @@
+{
+  "vault_address": "0x426A9412881d9A99e09076fa61B6f2d96ef272DC",
+  "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+  "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+  "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+  "created_at": "2025-10-25T16:54:20.076561",
+  "positions": [],
+  "fees_collected_cum": {
+    "token0_raw": 0,
+    "token1_raw": 0
+  },
+  "fees_cum_usd": 0.0,
+  "exec_history": [
+    {
+      "ts": "2025-10-25T16:54:20.076895",
+      "mode": "deploy_vault_v2",
+      "vault": "0x426A9412881d9A99e09076fa61B6f2d96ef272DC",
+      "adapter": "0xEe45a5Ca50B99d619066269638EAeDEc663f32db",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+      "tx_adapter": "03ba2be36994e8cae5e9ebec0957ba3e9a3039f528a7d2371ee8d3872ed74089",
+      "tx_vault": "590d1edba50809ffab90254705fbddede9e68d2a037010a702b3a92aa8c7562f"
+    },
+    {
+      "ts": "2025-10-25T16:54:57.519432",
+      "mode": "deposit",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.1,
+      "tx": "259f44db2005ed2a13f23e01812f5df4fd650c2e2cf48cba9e0863521ed33917"
+    },
+    {
+      "ts": "2025-10-25T16:55:40.368440",
+      "mode": "open",
+      "lower": -191840,
+      "upper": -190840,
+      "tx": "9bcac884f8297b377861e073205a3e016edb341c04b8c80d0c475469e26af146"
+    },
+    {
+      "ts": "2025-10-25T17:06:32.101524",
+      "mode": "exit",
+      "to": null,
+      "tx": "2d93126e798038a3d1633901594da7a1e501f6f41181a342e3448e9c5c40913d"
+    },
+    {
+      "ts": "2025-10-25T17:28:43.115253",
+      "mode": "swap_exact_in_aero",
+      "token_in": "0x4200000000000000000000000000000000000006",
+      "token_out": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "resolved_amount_mode": "token",
+      "amount_in_raw": 10000000000000000,
+      "min_out_raw": 42004379,
+      "tick_spacing_used": 1,
+      "slippage_bps": 50,
+      "tx": "0225b046e811bf7a2226cd13309fc13d8aa11f605239c56e3ab3baba19e61a2a",
+      "gas_used": 218872,
+      "effective_gas_price_wei": 1000000007,
+      "gas_eth": 0.000218872001532104,
+      "gas_usd": 0.924049683402107,
+      "value_at_sqrt_after_usd": 42.215457
+    },
+    {
+      "ts": "2025-10-25T17:31:22.601742",
+      "mode": "swap_exact_in_aero",
+      "token_in": "0x4200000000000000000000000000000000000006",
+      "token_out": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "resolved_amount_mode": "token",
+      "amount_in_raw": 89999990000000000,
+      "min_out_raw": 378029551,
+      "tick_spacing_used": 1,
+      "slippage_bps": 50,
+      "tx": "6d8057a0d7e3b8518ca42ae30c656ef2d30fc01f9863055bc734a03fe29e6620",
+      "gas_used": 201796,
+      "effective_gas_price_wei": 1000000007,
+      "gas_eth": 0.000201796001412572,
+      "gas_usd": 0.8519171306726027,
+      "value_at_sqrt_after_usd": 379.929197
+    },
+    {
+      "ts": "2025-10-25T17:31:58.911423",
+      "mode": "swap_exact_in_aero",
+      "token_in": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "token_out": "0x4200000000000000000000000000000000000006",
+      "resolved_amount_mode": "token",
+      "amount_in_raw": 100000000,
+      "min_out_raw": 23566813620589170,
+      "tick_spacing_used": 1,
+      "slippage_bps": 50,
+      "tx": "0adef30a2c65997ac3e23227f1dbcf33739af29b571a3b58c190f83255c6c371",
+      "gas_used": 209571,
+      "effective_gas_price_wei": 1000000007,
+      "gas_eth": 0.000209571001466997,
+      "gas_usd": 0.8847515478886125,
+      "value_at_sqrt_after_usd": 0.023685239819687606
+    },
+    {
+      "ts": "2025-10-25T17:33:24.700731",
+      "mode": "open",
+      "lower": -193840,
+      "upper": -191840,
+      "tx": "1c2539b4d2d3a980c5dec2f8841afb529c9c831c9ad516d7601f5d34bef24652"
+    },
+    {
+      "ts": "2025-10-25T17:34:13.742699",
+      "mode": "stake_gauge",
+      "tx": "43771f650c58854997e6ead19e8557a830ff48653d79d78d70de6e917a13068d"
+    }
+  ],
+  "collect_history": [],
+  "deposit_history": [
+    {
+      "ts": "2025-10-25T16:54:57.519036",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.1,
+      "amount_raw": 100000000000000000,
+      "tx": "259f44db2005ed2a13f23e01812f5df4fd650c2e2cf48cba9e0863521ed33917"
+    }
+  ],
+  "vault_initial_usd": 0.0,
+  "error_history": []
+}
