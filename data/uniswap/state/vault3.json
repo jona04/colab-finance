@@ -79,6 +79,19 @@
       "effective_gas_price_wei": 1000009,
       "gas_eth": 1.28995160946e-07,
       "gas_usd": 0.0016820010169418522
+    },
+    {
+      "ts": "2025-10-25T00:57:33.808859",
+      "mode": "open",
+      "lower": 182000,
+      "upper": 183000,
+      "tx": "d95543d262a0f8fbfa722cb7260751f2a4b56c19ff511e4e83f5218628d96b69"
+    },
+    {
+      "ts": "2025-10-25T00:58:04.338952",
+      "mode": "exit_withdraw",
+      "to": "0x71955d4098cD2C0737184Ec881016a538ed9A90D",
+      "tx": "c1d60b158da70aa4d94ea274739dd18fd4a754cb95051d0b274d2347fcde2570"
     }
   ],
   "collect_history": [],

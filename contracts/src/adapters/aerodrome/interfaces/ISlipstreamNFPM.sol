@@ -48,4 +48,5 @@ interface ISlipstreamNFPM {
         uint128 tokensOwed0,
         uint128 tokensOwed1
     );
+    function burn(uint tokenId) external;
 }

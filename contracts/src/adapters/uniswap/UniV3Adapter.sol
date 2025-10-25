@@ -317,7 +317,7 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
 
     function _exitPositionToVault(address vault) internal {
         uint256 tid = _tokenId[vault];
-        require(tid != 0, "no position");
+        if (tid == 0) return;
 
         // collect -> decrease -> collect -> burn
         NFPM(nfpm).collect(NFPM.CollectParams({

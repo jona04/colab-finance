@@ -68,7 +68,7 @@ def set_pool(dex: str, alias: str, req: SetPoolRequest):
     if not v: raise HTTPException(404, "Unknown alias")
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
     
-    vault_repo.set_pool(dex, req.alias, req.pool)
+    vault_repo.set_pool(dex, alias, req.pool)
     
     state_repo.ensure_state_initialized(dex, req.alias, vault_address=v["address"])
     state_repo.update_state(dex, req.alias, {"pool": req.pool})
@@ -367,6 +367,7 @@ def baseline(dex: str, alias: str, req: BaselineRequest):
         
         return {"ok": True, "baseline_usd": st["vault_initial_usd"]}
     # show
+    st = state_repo.load_state(dex, alias)
     return {"baseline_usd": float(st.get("vault_initial_usd", 0.0) or 0.0)}
 
 @router.post("/vaults/{dex}/deploy")
@@ -387,41 +388,6 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
     # -------- owner/source account --------
     owner = Web3.to_checksum_address(req.owner) if req.owner else txs.sender_address()
 
-    # -------- V1 BACK-COMPAT (opcional) --------
-    if req.version == "v1":
-        # seu bloco V1 atual (SingleUserVault.sol com ctor(nfpm))
-        artifact_path = Path("contracts/out/SingleUserVault.sol/SingleUserVault.json")
-        if not artifact_path.exists():
-            raise HTTPException(501, "V1 artifact not found")
-        art = json.loads(artifact_path.read_text())
-        abi = art["abi"]; bytecode = art["bytecode"]["object"] if isinstance(art["bytecode"], dict) else art["bytecode"]
-        res = txs.deploy(abi=abi, bytecode=bytecode, ctor_args=[Web3.to_checksum_address(req.nfpm)], wait=True)
-        vault_addr = res["address"]
-        # setPoolOnce(pool) se existir
-        vault = w3.eth.contract(address=Web3.to_checksum_address(vault_addr), abi=abi)
-        try:
-            if hasattr(vault.functions, "setPoolOnce"):
-                txs.send(vault.functions.setPoolOnce(Web3.to_checksum_address(req.pool)), wait=True)
-        except Exception:
-            pass
-
-        # registry/state
-        vault_repo.add_vault(dex, req.alias, {
-            "address": vault_addr,
-            "adapter": None,
-            "pool": req.pool, "nfpm": req.nfpm, "gauge": req.gauge,
-            "rpc_url": req.rpc_url, "version": "v1"
-        })
-        state_repo.ensure_state_initialized(dex, req.alias,
-            vault_address=vault_addr, nfpm=req.nfpm, pool=req.pool, gauge=req.gauge, adapter=None)
-        vault_repo.set_active(dex, req.alias)
-        state_repo.append_history(dex, req.alias, "exec_history", {
-            "ts": datetime.utcnow().isoformat(), "mode": "deploy_vault_v1",
-            "vault": vault_addr, "pool": req.pool, "nfpm": req.nfpm, "tx": res["tx"]
-        })
-        return {"tx": res["tx"], "address": vault_addr, "alias": req.alias, "dex": dex, "version": "v1"}
-
-    # -------- V2 (default) --------
     # 1) Deploy adapter conforme DEX
     if dex == "uniswap":
         adapter_art_path = Path("contracts/out/UniV3Adapter.sol/UniV3Adapter.json")
@@ -444,7 +410,7 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
         aart = json.loads(adapter_art_path.read_text())
         aabi = aart["abi"]; abyte = aart["bytecode"]["object"] if isinstance(aart["bytecode"], dict) else aart["bytecode"]
         # ctor(nfpm, pool, gauge?) — ajuste exatamente ao seu SlipstreamAdapter.sol
-        ctor = [Web3.to_checksum_address(req.nfpm), Web3.to_checksum_address(req.pool)]
+        ctor = [Web3.to_checksum_address(req.pool), Web3.to_checksum_address(req.nfpm)]
         if req.gauge:
             ctor.append(Web3.to_checksum_address(req.gauge))
         adapter_res = txs.deploy(abi=aabi, bytecode=abyte, ctor_args=ctor, wait=True)
@@ -526,7 +492,7 @@ def stake_nft(dex: str, alias: str, req: StakeRequest):
     if token_id == 0:
         raise HTTPException(400, "No active position tokenId")
 
-    txh = TxService(v.get("rpc_url")).send(ad.fn_stake_nft(token_id))
+    txh = TxService(v.get("rpc_url")).send(ad.fn_gauge_stake(token_id))
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "stake_gauge",
@@ -547,7 +513,7 @@ def unstake_nft(dex: str, alias: str, req: UnstakeRequest):
     if token_id == 0:
         raise HTTPException(400, "No active position tokenId")
 
-    txh = TxService(v.get("rpc_url")).send(ad.fn_unstake_nft(token_id))
+    txh = TxService(v.get("rpc_url")).send(ad.fn_gauge_unstake(token_id))
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "unstake_gauge",
@@ -567,13 +533,17 @@ def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
     if req.mode == "account":
         if not req.account:
             raise HTTPException(400, "account is required when mode='account'")
-        fn = ad.fn_claim_rewards_by_account(req.account)
+        # Aerodrome gauge tem overload getReward(account); chame direto via adapter, se exposto.
+        g = ad.gauge_contract()
+        if not g:
+            raise HTTPException(400, "Pool has no gauge")
+        fn = g.functions.getReward(Web3.to_checksum_address(req.account))
     else:
         # default: via tokenId
         token_id = int(req.token_id or ad.vault.functions.positionTokenId().call())
         if token_id == 0:
             raise HTTPException(400, "No active position tokenId")
-        fn = ad.fn_claim_rewards_by_token(token_id)
+        fn = ad.fn_gauge_claim(token_id)
 
     txh = TxService(v.get("rpc_url")).send(fn)
     state_repo.append_history(dex, alias, "exec_history", {

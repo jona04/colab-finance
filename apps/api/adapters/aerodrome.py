@@ -9,84 +9,28 @@ from .base import DexAdapter
 from bot.utils.math_univ3 import get_sqrt_ratio_at_tick, get_amounts_for_liquidity
 
 
-# ABI mínimo para Slipstream CL pool (tenta slot0(); fallback para globalState())
-ABI_POOL = [
-    # Uniswap v3-style
-    {"name":"slot0","outputs":[
-        {"type":"uint160","name":"sqrtPriceX96"},
-        {"type":"int24","name":"tick"},
-        {"type":"uint16","name":"observationIndex"},
-        {"type":"uint16","name":"observationCardinality"},
-        {"type":"uint16","name":"observationCardinalityNext"},
-        {"type":"uint8","name":"feeProtocol"},
-        {"type":"bool","name":"unlocked"}],
-     "inputs":[],"stateMutability":"view","type":"function"},
-
-    # Algebra/Slipstream-style (fallback)
-    {"name":"globalState","outputs":[
-        {"type":"uint160","name":"price"},
-        {"type":"int24","name":"tick"},
-        {"type":"uint16","name":"lastFee"},
-        {"type":"uint8","name":"pluginConfig"},
-        {"type":"bool","name":"unlocked"}],
-     "inputs":[],"stateMutability":"view","type":"function"},
-
-    {"name":"observe","outputs":[
-        {"type":"int56[]","name":"tickCumulatives"},
-        {"type":"uint160[]","name":"secondsPerLiquidityCumulativeX128"}],
-     "inputs":[{"type":"uint32[]","name":"secondsAgos"}],
-     "stateMutability":"view","type":"function"},
-
-    {"name":"token0","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"token1","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
-
-    {"name":"tickSpacing","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"fee","outputs":[{"type":"uint24"}],"inputs":[],"stateMutability":"view","type":"function"}
-]
 ABI_ERC20 = [
     {"name":"decimals","outputs":[{"type":"uint8"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"symbol","outputs":[{"type":"string"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"balanceOf","outputs":[{"type":"uint256"}],"inputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
     {"name":"transfer","outputs":[{"type":"bool"}],"inputs":[{"type":"address"},{"type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
 ]
-ABI_NFPM = [
-    {"name":"positions","outputs":[
-        {"type":"uint96"}, {"type":"address"}, {"type":"address"}, {"type":"address"},
-        {"type":"uint24"}, {"type":"int24"}, {"type":"int24"}, {"type":"uint128"},
-        {"type":"uint256"}, {"type":"uint256"}, {"type":"uint128"}, {"type":"uint128"}],
-     "inputs":[{"type":"uint256"}],"stateMutability":"view","type":"function"},
-    {"name":"collect","outputs":[{"type":"uint256"},{"type":"uint256"}],
-     "inputs":[{"components":[
-        {"type":"uint256","name":"tokenId"},
-        {"type":"address","name":"recipient"},
-        {"type":"uint128","name":"amount0Max"},
-        {"type":"uint128","name":"amount1Max"}],
-       "type":"tuple","name":"params"}],
-     "stateMutability":"nonpayable","type":"function"},
-]
-# minimal vault ABI (adapt names if your contract differs)
-ABI_VAULT = [
-    {"name":"pool","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"positionTokenId","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"currentRange","outputs":[{"type":"int24"},{"type":"int24"},{"type":"uint128"}],
-     "inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"twapOk","outputs":[{"type":"bool"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"lastRebalance","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"minWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"maxWidth","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
+ABI_ADAPTER_MIN = [
     {"name":"minCooldown","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"twapWindow","outputs":[{"type":"uint32"}],"inputs":[],"stateMutability":"view","type":"function"},
-    {"name":"maxTwapDeviationTicks","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
-    # mutations (adjust names if needed)
+    {"name":"lastRebalance","outputs":[{"type":"uint256"}],"inputs":[{"type":"address"}],"stateMutability":"view","type":"function"},
+    {"name":"tickSpacing","outputs":[{"type":"int24"}],"inputs":[],"stateMutability":"view","type":"function"},
+]
+ABI_VAULT = [
+    {"name":"adapter","outputs":[{"type":"address"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"positionTokenId","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
+    {"name":"positionTokenIdView","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
     {"name":"openInitialPosition","outputs":[],"inputs":[{"type":"int24"},{"type":"int24"}],"stateMutability":"nonpayable","type":"function"},
-    {"name":"rebalanceWithCaps","outputs":[],"inputs":[{"type":"int24"},{"type":"int24"},{"type":"uint256"},{"type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+    {"name":"rebalanceWithCaps","outputs":[{"type":"uint128"}],"inputs":[{"type":"int24"},{"type":"int24"},{"type":"uint256"},{"type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
     {"name":"exitPositionToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
-    {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
-    {"name":"collectToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
+    {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[{"type":"address"}],"stateMutability":"nonpayable","type":"function"},
+    {"name":"collectToVault","outputs":[{"type":"uint256"},{"type":"uint256"}],"inputs":[],"stateMutability":"nonpayable","type":"function"},
 ]
 
-# ABI_FACTORY = [{"inputs":[{"internalType":"address","name":"_voter","type":"address"},{"internalType":"address","name":"_poolImplementation","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"uint24","name":"oldUnstakedFee","type":"uint24"},{"indexed":True,"internalType":"uint24","name":"newUnstakedFee","type":"uint24"}],"name":"DefaultUnstakedFeeChanged","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"oldOwner","type":"address"},{"indexed":True,"internalType":"address","name":"newOwner","type":"address"}],"name":"OwnerChanged","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"token0","type":"address"},{"indexed":True,"internalType":"address","name":"token1","type":"address"},{"indexed":True,"internalType":"int24","name":"tickSpacing","type":"int24"},{"indexed":False,"internalType":"address","name":"pool","type":"address"}],"name":"PoolCreated","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"oldFeeManager","type":"address"},{"indexed":True,"internalType":"address","name":"newFeeManager","type":"address"}],"name":"SwapFeeManagerChanged","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"oldFeeModule","type":"address"},{"indexed":True,"internalType":"address","name":"newFeeModule","type":"address"}],"name":"SwapFeeModuleChanged","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"int24","name":"tickSpacing","type":"int24"},{"indexed":True,"internalType":"uint24","name":"fee","type":"uint24"}],"name":"TickSpacingEnabled","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"oldFeeManager","type":"address"},{"indexed":True,"internalType":"address","name":"newFeeManager","type":"address"}],"name":"UnstakedFeeManagerChanged","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"oldFeeModule","type":"address"},{"indexed":True,"internalType":"address","name":"newFeeModule","type":"address"}],"name":"UnstakedFeeModuleChanged","type":"event"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"allPools","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"allPoolsLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"int24","name":"tickSpacing","type":"int24"},{"internalType":"uint160","name":"sqrtPriceX96","type":"uint160"}],"name":"createPool","outputs":[{"internalType":"address","name":"pool","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"defaultUnstakedFee","outputs":[{"internalType":"uint24","name":"","type":"uint24"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"int24","name":"tickSpacing","type":"int24"},{"internalType":"uint24","name":"fee","type":"uint24"}],"name":"enableTickSpacing","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"factoryRegistry","outputs":[{"internalType":"contract IFactoryRegistry","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"},{"internalType":"address","name":"","type":"address"},{"internalType":"int24","name":"","type":"int24"}],"name":"getPool","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"pool","type":"address"}],"name":"getSwapFee","outputs":[{"internalType":"uint24","name":"","type":"uint24"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"pool","type":"address"}],"name":"getUnstakedFee","outputs":[{"internalType":"uint24","name":"","type":"uint24"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"pool","type":"address"}],"name":"isPool","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"owner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"poolImplementation","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint24","name":"_defaultUnstakedFee","type":"uint24"}],"name":"setDefaultUnstakedFee","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_owner","type":"address"}],"name":"setOwner","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_swapFeeManager","type":"address"}],"name":"setSwapFeeManager","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_swapFeeModule","type":"address"}],"name":"setSwapFeeModule","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_unstakedFeeManager","type":"address"}],"name":"setUnstakedFeeManager","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_unstakedFeeModule","type":"address"}],"name":"setUnstakedFeeModule","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"swapFeeManager","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"swapFeeModule","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"int24","name":"","type":"int24"}],"name":"tickSpacingToFee","outputs":[{"internalType":"uint24","name":"","type":"uint24"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"tickSpacings","outputs":[{"internalType":"int24[]","name":"","type":"int24[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"unstakedFeeManager","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"unstakedFeeModule","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"voter","outputs":[{"internalType":"contract IVoter","name":"","type":"address"}],"stateMutability":"view","type":"function"}]
-AERODROME_POOL_FACTORY = "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A" 
 U128_MAX = (1<<128) - 1
 
 ABI_DIR = Path("libs/abi/aerodrome")
@@ -101,48 +45,55 @@ class AerodromeAdapter(DexAdapter):
     Uses the same v3 math/ABIs pattern as UniswapV3Adapter.
     """
 
-    def pool_abi(self) -> list: return _load_abi_json("PoolImplementation.json") 
-    def erc20_abi(self) -> list: return ABI_ERC20
-    def nfpm_abi(self) -> list:  return _load_abi_json("INonfungiblePositionManager.json") 
-    def vault_abi(self) -> list: return ABI_VAULT
-    def abi_factory(self) -> list: return _load_abi_json("IUniswapV3Pool.json")
-    def gauge_impl_abi(self) -> list: return _load_abi_json("GaugeImplementation.json")
+    def pool_abi(self) -> list:         return _load_abi_json("PoolImplementation.json")
+    def nfpm_abi(self) -> list:         return _load_abi_json("NonfungiblePositionManager.json")
+    def factory_abi(self) -> list:      return _load_abi_json("PoolFactory.json")
+    def gauge_impl_abi(self) -> list:   return _load_abi_json("GaugeImplementation.json")
+    def erc20_abi(self) -> list:        return ABI_ERC20
+    def vault_abi(self) -> list:        return ABI_VAULT
     
-    def factory_contract(self):
-        addr = Web3.to_checksum_address(
-            os.getenv("AERODROME_POOL_FACTORY", AERODROME_POOL_FACTORY)
-        )
-        return self.w3.eth.contract(address=addr, abi=self.abi_factory())
-
-    def assert_is_pool(self):
-        try:
-            is_pool = self.factory_contract().functions.isPool(
-                Web3.to_checksum_address(self.pool)
-            ).call()
-        except Exception:
-            is_pool = False
-        if not is_pool:
-            raise ValueError("Provided address is not a Slipstream pool (factory.isPool == false).")
-
-    # sobrescreva pool_contract para validar
+    # ---- contracts helpers ----
     def pool_contract(self):
-        self.assert_is_pool()
         return self.w3.eth.contract(address=Web3.to_checksum_address(self.pool), abi=self.pool_abi())
 
     def nfpm_contract(self):
         return self.w3.eth.contract(address=Web3.to_checksum_address(self.nfpm), abi=self.nfpm_abi()) if self.nfpm else None
 
+    def factory_contract(self):
+        addr = Web3.to_checksum_address(os.getenv("AERODROME_POOL_FACTORY", "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"))
+        return self.w3.eth.contract(address=addr, abi=self.factory_abi())
+    
     def gauge_address(self) -> Optional[str]:
-        """Resolve gauge from pool; returns None if pool has no gauge."""
         try:
-            return self.pool_contract().functions.gauge().call()
+            g = self.pool_contract().functions.gauge().call()
+            if int(g, 16) == 0: return None
+            return Web3.to_checksum_address(g)
         except Exception:
             return None
 
     def gauge_contract(self):
         g = self.gauge_address()
-        return self.w3.eth.contract(address=Web3.to_checksum_address(g), abi=self.gauge_impl_abi()) if g and int(g, 16) != 0 else None
+        return self.w3.eth.contract(address=g, abi=self.gauge_impl_abi()) if g else None
 
+    def adapter_contract(self):
+        # Lê o endereço do adapter via vault.adapter()
+        try:
+            adapter_addr = self.vault.functions.adapter().call()
+            if int(adapter_addr, 16) == 0:
+                return None
+            return self.w3.eth.contract(address=Web3.to_checksum_address(adapter_addr), abi=ABI_ADAPTER_MIN)
+        except Exception:
+            return None
+    
+    
+    # ---- sanity ----
+    def assert_is_pool(self):
+        try:
+            ok = self.factory_contract().functions.isPool(Web3.to_checksum_address(self.pool)).call()
+        except Exception:
+            ok = False
+        if not ok:
+            raise ValueError("Provided address is not an Aerodrome Slipstream pool (factory.isPool == false).")
 
     # ---------- reads ----------
     def slot0(self) -> Tuple[int,int]:
@@ -165,16 +116,20 @@ class AerodromeAdapter(DexAdapter):
         """
         Fetch token addresses/symbols/decimals and tickSpacing from pool.
         """
+        self.assert_is_pool()
         pc = self.pool_contract()
         t0 = pc.functions.token0().call()
         t1 = pc.functions.token1().call()
         spacing = int(pc.functions.tickSpacing().call())
-        e0 = self.erc20(t0)
-        e1 = self.erc20(t1)
-        sym0 = e0.functions.symbol().call()
-        sym1 = e1.functions.symbol().call()
+
+        e0 = self.erc20(t0); e1 = self.erc20(t1)
+        try: sym0 = e0.functions.symbol().call()
+        except: sym0 = "T0"
+        try: sym1 = e1.functions.symbol().call()
+        except: sym1 = "T1"
         dec0 = int(e0.functions.decimals().call())
         dec1 = int(e1.functions.decimals().call())
+        
         return {"token0": t0, "token1": t1, "spacing": spacing, "sym0": sym0, "sym1": sym1, "dec0": dec0, "dec1": dec1}
 
     def vault_state(self) -> Dict[str, Any]:
@@ -188,54 +143,64 @@ class AerodromeAdapter(DexAdapter):
         try:
             token_id = int(self.vault.functions.positionTokenId().call())
         except Exception:
-            pass
+            try:
+                token_id = int(self.vault.functions.positionTokenIdView().call())
+            except Exception:
+                token_id = 0
 
         lower = upper = 0
         liq = 0
-        try:
-            lower, upper, liq = self.vault.functions.currentRange().call()
-            lower, upper, liq = int(lower), int(upper), int(liq)
-        except Exception:
-            # fallback to spot tick as both bounds when no position
+        if token_id:
+            nfpm = self.nfpm_contract()
+            (_n, _op, _t0, _t1, _ts, l, u, L, *_rest) = nfpm.functions.positions(int(token_id)).call()
+            lower, upper, liq = int(l), int(u), int(L)
+        else:
+            # sem posição: fixa bounds no tick atual
             _, spot_tick = self.slot0()
-            lower = upper = int(spot_tick); liq = 0
+            lower = upper = int(spot_tick)
+            liq = 0
 
-        d = {
-            "pool": self.vault.functions.pool().call(),
-            "tokenId": token_id,
-            "lower": lower, "upper": upper, "liq": liq,
-        }
-        try:
-            d["twapOk"] = bool(self.vault.functions.twapOk().call())
-        except Exception:
-            d["twapOk"] = True
-        try:
-            d["lastRebalance"] = int(self.vault.functions.lastRebalance().call())
-        except Exception:
+        d = {"tokenId": token_id, "lower": lower, "upper": upper, "liq": liq}
+        
+        ad = self.adapter_contract()
+        if ad:
+            try:
+                d["min_cd"] = int(ad.functions.minCooldown().call())
+            except Exception:
+                d["min_cd"] = 0
+            try:
+                d["lastRebalance"] = int(ad.functions.lastRebalance(self.vault.address).call())
+            except Exception:
+                d["lastRebalance"] = 0
+        else:
+            d["min_cd"] = 0
             d["lastRebalance"] = 0
+
+        # twapOk: SlipstreamAdapter.sol não expõe; marcamos True por padrão
+        d["twapOk"] = True
         return d
 
-    def amounts_in_position_now(self, lower: int, upper: int, liq: int) -> Tuple[int,int]:
+    def amounts_in_position_now(self, lower: int, upper: int, liq: int) -> Tuple[int, int]:
         """
-        Compute amounts for a Uniswap v3-like position under current price.
+        Quantidades hoje para a posição (mesma matemática do Uniswap v3).
         """
         sqrtP = self.slot0()[0]
-        sqrtA = get_sqrt_ratio_at_tick(lower)
-        sqrtB = get_sqrt_ratio_at_tick(upper)
-        return get_amounts_for_liquidity(sqrtP, sqrtA, sqrtB, liq)
+        sqrtA = get_sqrt_ratio_at_tick(int(lower))
+        sqrtB = get_sqrt_ratio_at_tick(int(upper))
+        return get_amounts_for_liquidity(int(sqrtP), int(sqrtA), int(sqrtB), int(liq))
 
     def call_static_collect(self, token_id: int, recipient: str) -> Tuple[int, int]:
         """
-        Preview collect via NFPM.collect() static call (payable in ABI; .call() is fine).
+        Preview do collect pela NFPM (static call).
         """
         if not self.nfpm:
             return (0, 0)
+        if not token_id:
+            return (0, 0)
         nfpm = self.nfpm_contract()
-        a0, a1 = nfpm.functions.collect((
-            int(token_id),
-            Web3.to_checksum_address(recipient),
-            U128_MAX, U128_MAX
-        )).call()
+        a0, a1 = nfpm.functions.collect(
+            (int(token_id), Web3.to_checksum_address(recipient), U128_MAX, U128_MAX)
+        ).call()
         return int(a0), int(a1)
 
         # ---------- gauge reads ----------
@@ -256,6 +221,10 @@ class AerodromeAdapter(DexAdapter):
         """
         Vault mutation: openInitialPosition(lower, upper).
         """
+        
+        slot0 = self.pool_contract().functions.slot0().call()
+        print("-----------------\n\n\n\n\n\n", slot0)
+    
         if hasattr(self.vault.functions, "openInitialPosition"):
             return self.vault.functions.openInitialPosition(int(lower), int(upper))
         raise NotImplementedError("Vault missing openInitialPosition")
@@ -275,9 +244,9 @@ class AerodromeAdapter(DexAdapter):
             return self.vault.functions.exitPositionToVault()
         raise NotImplementedError("Vault missing exitPositionToVault")
 
-    def fn_exit_withdraw(self):
+    def fn_exit_withdraw(self, to_address: str):
         if hasattr(self.vault.functions, "exitPositionAndWithdrawAll"):
-            return self.vault.functions.exitPositionAndWithdrawAll()
+            return self.vault.functions.exitPositionAndWithdrawAll(Web3.to_checksum_address(to_address))
         raise NotImplementedError("Vault missing exitPositionAndWithdrawAll")
 
     def fn_collect(self):
@@ -302,7 +271,11 @@ class AerodromeAdapter(DexAdapter):
         if not g:
             raise NotImplementedError("Pool has no gauge()")
         if token_id is None:
-            token_id = int(self.vault.functions.positionTokenId().call())
+            # tenta ler do vault
+            try:
+                token_id = int(self.vault.functions.positionTokenId().call())
+            except Exception:
+                token_id = int(self.vault.functions.positionTokenIdView().call())
         if not token_id:
             raise ValueError("No position tokenId to stake")
         return g.functions.deposit(int(token_id))
@@ -312,7 +285,10 @@ class AerodromeAdapter(DexAdapter):
         if not g:
             raise NotImplementedError("Pool has no gauge()")
         if token_id is None:
-            token_id = int(self.vault.functions.positionTokenId().call())
+            try:
+                token_id = int(self.vault.functions.positionTokenId().call())
+            except Exception:
+                token_id = int(self.vault.functions.positionTokenIdView().call())
         if not token_id:
             raise ValueError("No position tokenId to unstake")
         return g.functions.withdraw(int(token_id))
@@ -322,7 +298,11 @@ class AerodromeAdapter(DexAdapter):
         if not g:
             raise NotImplementedError("Pool has no gauge()")
         if token_id is None:
-            token_id = int(self.vault.functions.positionTokenId().call())
+            try:
+                token_id = int(self.vault.functions.positionTokenId().call())
+            except Exception:
+                token_id = int(self.vault.functions.positionTokenIdView().call())
         if not token_id:
             raise ValueError("No position tokenId to claim")
+        # Gauge tem 2 overloads; aqui usamos a do tokenId
         return g.functions.getReward(int(token_id))

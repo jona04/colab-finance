@@ -1,0 +1,23 @@
+{
+  "active": "vault2",
+  "vaults": {
+    "vault1": {
+      "address": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
+      "adapter": "0x6715e298e821b8C30bec2bf27C1435E45989047c",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+      "rpc_url": "http://127.0.0.1:8545",
+      "version": "v2"
+    },
+    "vault2": {
+      "address": "0x1b1277b70c4996Ef8257B25fe4d8caE394b5d937",
+      "adapter": "0xa303587bf368bbcC07692b7816e388FBDD6a5A99",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x0000000000000000000000000000000000000000",
+      "rpc_url": "http://127.0.0.1:8545",
+      "version": "v2"
+    }
+  }
+}

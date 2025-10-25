@@ -79,7 +79,7 @@ def _value_usd(
     # fallback: trata token1 como quote
     return amt0_h * p_t1_t0 + amt1_h
 
-def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> Dict[str, Any]:
+def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
     """
     Build a full "status" model from on-chain reads.
 

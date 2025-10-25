@@ -16,6 +16,11 @@ class TxService:
         self.pk = s.PRIVATE_KEY
         self.account = Account.from_key(self.pk)
 
+        print("🔍 [TxService] RPC_URL_DEFAULT =", s.RPC_URL_DEFAULT)
+        print("🔍 [TxService] PRIVATE_KEY (prefix) =", s.PRIVATE_KEY)
+        print("🔍 [TxService] rpc_url arg =", rpc_url)
+        print("🔍 [TxService] Using account =", self.account.address)
+        
     def _base_tx(self) -> dict:
         addr = self.account.address
         nonce = self.w3.eth.get_transaction_count(addr)

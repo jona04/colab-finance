@@ -1,0 +1,59 @@
+{
+  "vault_address": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
+  "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+  "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+  "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+  "created_at": "2025-10-25T01:32:04.451965",
+  "positions": [],
+  "fees_collected_cum": {
+    "token0_raw": 0,
+    "token1_raw": 0
+  },
+  "fees_cum_usd": 0.0,
+  "exec_history": [
+    {
+      "ts": "2025-10-25T01:32:04.452303",
+      "mode": "deploy_vault_v2",
+      "vault": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
+      "adapter": "0x6715e298e821b8C30bec2bf27C1435E45989047c",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+      "tx_adapter": "c622aaaa73f47382a2c3571516f8f6cb33be14868bf63b42c31d29fd7a4f0340",
+      "tx_vault": "6928338e13068bccde833e8b72f1f2df4bef71f2c322fde292be61ba776cca4d"
+    },
+    {
+      "ts": "2025-10-25T02:08:43.132813",
+      "mode": "deposit",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 1.0,
+      "tx": "31e972976aaace57946880c5f4f4727c491dd65e89c06755bc4901cc7bd287ae"
+    },
+    {
+      "ts": "2025-10-25T11:27:15.558198",
+      "mode": "deposit",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.2,
+      "tx": "cdb6c353eca869aa289ce7e005978e728bb421f57121e505a40d24715454354c"
+    }
+  ],
+  "collect_history": [],
+  "deposit_history": [
+    {
+      "ts": "2025-10-25T02:08:43.132429",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 1.0,
+      "amount_raw": 1000000000000000000,
+      "tx": "31e972976aaace57946880c5f4f4727c491dd65e89c06755bc4901cc7bd287ae"
+    },
+    {
+      "ts": "2025-10-25T11:27:15.557670",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.2,
+      "amount_raw": 200000000000000000,
+      "tx": "cdb6c353eca869aa289ce7e005978e728bb421f57121e505a40d24715454354c"
+    }
+  ],
+  "vault_initial_usd": 0.0,
+  "error_history": []
+}

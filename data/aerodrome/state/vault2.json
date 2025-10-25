@@ -1,0 +1,64 @@
+{
+  "vault_address": "0x1b1277b70c4996Ef8257B25fe4d8caE394b5d937",
+  "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+  "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+  "gauge": "0x0000000000000000000000000000000000000000",
+  "created_at": "2025-10-25T10:59:13.826486",
+  "positions": [],
+  "fees_collected_cum": {
+    "token0_raw": 0,
+    "token1_raw": 0
+  },
+  "fees_cum_usd": 0.0,
+  "exec_history": [
+    {
+      "ts": "2025-10-25T10:59:13.826856",
+      "mode": "deploy_vault_v2",
+      "vault": "0x1b1277b70c4996Ef8257B25fe4d8caE394b5d937",
+      "adapter": "0xa303587bf368bbcC07692b7816e388FBDD6a5A99",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x0000000000000000000000000000000000000000",
+      "tx_adapter": "bc3edb4aa4e84674f7067b7a2ef68979351759020ad2722c58fe14cc8be34ce0",
+      "tx_vault": "998297edd82684682c52336bdb960b13daf6794e31d3c328449c69f37bdf391d"
+    },
+    {
+      "ts": "2025-10-25T11:27:30.967974",
+      "mode": "deposit",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.5,
+      "tx": "573dc870cbfebc2faebcc876ad2daae2205485df781f1a1f144c87331a255f3d"
+    },
+    {
+      "ts": "2025-10-25T11:27:54.722009",
+      "mode": "open",
+      "lower": -192040,
+      "upper": -191540,
+      "tx": "04517a86edf0abe77701020d009bcdc8274e1367234adb87f0ba504535cde0e0"
+    },
+    {
+      "ts": "2025-10-25T11:32:28.732875",
+      "mode": "exit",
+      "to": null,
+      "tx": "1218ff59e152a8bcdf6b7dc3d381920a34d69c443d8f0d9d0361de208ac0dc0d"
+    },
+    {
+      "ts": "2025-10-25T11:42:01.977170",
+      "mode": "exit_withdraw",
+      "to": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "tx": "aa4a174e3c9ace53072d54602cd512b10b51a6d1f7266664d64dff89e340c4c5"
+    }
+  ],
+  "collect_history": [],
+  "deposit_history": [
+    {
+      "ts": "2025-10-25T11:27:30.967510",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.5,
+      "amount_raw": 500000000000000000,
+      "tx": "573dc870cbfebc2faebcc876ad2daae2205485df781f1a1f144c87331a255f3d"
+    }
+  ],
+  "error_history": [],
+  "vault_initial_usd": 0.0
+}

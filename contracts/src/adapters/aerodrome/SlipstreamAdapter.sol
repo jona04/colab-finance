@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+
 import "../../interfaces/IConcentratedLiquidityAdapter.sol";
 import "./interfaces/ISlipstreamPool.sol";
 import "./interfaces/ISlipstreamNFPM.sol";
@@ -13,9 +16,11 @@ import "./interfaces/ISlipstreamGauge.sol";
  * All token flows happen between the Vault and protocol contracts; the adapter holds nothing.
  */
 contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
+    using SafeERC20 for IERC20;
+
     address public immutable override pool;
     address public immutable override nfpm;
-    address public immutable override gauge; // optional; can be zero
+    address public immutable override gauge; // opcional; pode ser zero
 
     // --- guard params (copiados do V1 para manter comportamento) ---
     uint256 public minCooldown = 30 minutes;
@@ -27,7 +32,7 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
     // vault => lastRebalance
     mapping(address => uint256) public lastRebalance;
 
-    // vault => tokenId (mantemos aqui; o Vault V2 também salva localmente pra exibir)
+    // vault => tokenId (NFT É mantido pelo ADAPTER)
     mapping(address => uint256) private _tokenId;
 
     constructor(address _pool, address _nfpm, address _gauge) {
@@ -51,13 +56,7 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
     }
 
     function currentTokenId(address vault) public view override returns (uint256) {
-        // Your vault stores tokenId; this adapter can also read from vault via interface if needed.
-        // For simplicity, expect the vault to call us passing its own address and we query it.
-        // We'll rely on the vault exposing a view; or have the vault call us with known tokenId (preferred).
-        // Here: assume the vault exposes `positionTokenId()`.
-        (bool ok, bytes memory data) = vault.staticcall(abi.encodeWithSignature("positionTokenId()"));
-        if (!ok || data.length == 0) return 0;
-        return abi.decode(data, (uint256));
+        return _tokenId[vault];
     }
 
     function currentRange(address vault)
@@ -72,52 +71,75 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
     }
 
 
+    // ===== internals =====
+
     function _approveIfNeeded(address token, address spender, uint256 amount) internal {
-        // Minimal ERC20 approve pattern is left out intentionally; vault should pre-approve NFPM if needed.
-        // Slipstream NFPM is pull model on mint/increase, so ensure approvals exist at the Vault.
-        // If you prefer adapter to handle approvals, make adapter own allowances using SafeERC20 here.
+        if (amount == 0) return;
+        uint256 allowance = IERC20(token).allowance(address(this), spender);
+        if (allowance < amount) {
+            IERC20(token).forceApprove(spender, 0);
+            IERC20(token).forceApprove(spender, type(uint256).max);
+        }
     }
+
+    // ===== mutations (IConcentratedLiquidityAdapter) =====
 
     function openInitialPosition(
         address vault,
         int24 tickLower,
         int24 tickUpper
     ) external override returns (uint256 tokenId, uint128 liquidity) {
-        // Read tokens from pool and pull balances from vault (the Vault should have funds)
-        address token0 = ISlipstreamPool(pool).token0();
-        address token1 = ISlipstreamPool(pool).token1();
+        require(_tokenId[vault] == 0, "already opened");
 
-        // Amounts: adapter is stateless; we mint using all idle balances held by the vault.
-        // If you want caps here, pass via vault and wire params. For now, we read balances and use them.
-        uint256 amt0 = _balanceOf(token0, vault);
-        uint256 amt1 = _balanceOf(token1, vault);
+        (address token0, address token1) = tokens();
 
-        // Approvals must exist from the Vault to NFPM. You can require the Vault to call ERC20.approve(nfpm).
-        // The adapter can't set allowances on behalf of the Vault unless the Vault explicitly calls adapter for it.
+        // Saldos no VAULT
+        uint256 a0 = IERC20(token0).balanceOf(vault);
+        uint256 a1 = IERC20(token1).balanceOf(vault);
+        require(a0 > 0 || a1 > 0, "no funds");
 
+        // Puxa tokens do VAULT -> ADAPTER (Vault deve ter aprovado o adapter)
+        if (a0 > 0) IERC20(token0).safeTransferFrom(vault, address(this), a0);
+        if (a1 > 0) IERC20(token1).safeTransferFrom(vault, address(this), a1);
+
+        // Aprova NFPM
+        _approveIfNeeded(token0, nfpm, a0);
+        _approveIfNeeded(token1, nfpm, a1);
+
+        // Mint — NFT fica no ADAPTER
         ISlipstreamNFPM.MintParams memory p = ISlipstreamNFPM.MintParams({
             token0: token0,
             token1: token1,
             tickSpacing: ISlipstreamPool(pool).tickSpacing(),
             tickLower: tickLower,
             tickUpper: tickUpper,
-            amount0Desired: amt0,
-            amount1Desired: amt1,
+            amount0Desired: a0,
+            amount1Desired: a1,
             amount0Min: 0,
             amount1Min: 0,
-            recipient: vault,
+            recipient: address(this),
             deadline: block.timestamp,
-            sqrtPriceX96: 0 // 0 = no price init; require pool is initialized
+            sqrtPriceX96: 0 // 0 = sem init-price; exige pool inicializado
         });
 
         (tokenId, liquidity,,) = ISlipstreamNFPM(nfpm).mint(p);
+        _tokenId[vault] = tokenId;
 
-        // Optional: stake the NFT if a gauge is configured
+        // Devolve sobras para o VAULT
+        uint256 r0 = IERC20(token0).balanceOf(address(this));
+        uint256 r1 = IERC20(token1).balanceOf(address(this));
+        if (r0 > 0) IERC20(token0).safeTransfer(vault, r0);
+        if (r1 > 0) IERC20(token1).safeTransfer(vault, r1);
+
+        // Stake (opcional)
         if (gauge != address(0)) {
-            // Vault must approve gauge for NFT, or NFPM.setApprovalForAll(gauge, true) by the Vault.
+            // Como o ADAPTER é dono, pode depositar diretamente
             ISlipstreamGauge(gauge).deposit(tokenId);
         }
+
+        lastRebalance[vault] = block.timestamp;
     }
+
 
     function rebalanceWithCaps(
         address vault,
@@ -126,22 +148,84 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         uint256 cap0,
         uint256 cap1
     ) external override returns (uint128 newLiquidity) {
-        uint256 tokenId = currentTokenId(vault);
-        require(tokenId != 0, "no pos");
+        uint256 tokenId = _tokenId[vault];
+        require(tokenId != 0, "no position");
 
-        // 1) If staked, unstake first (Gauge withdraw)
-        if (gauge != address(0) && ISlipstreamGauge(gauge).stakedContains(vault, tokenId)) {
+        // 0) Se staked, desestacar primeiro
+        if (gauge != address(0) && ISlipstreamGauge(gauge).stakedContains(address(this), tokenId)) {
             ISlipstreamGauge(gauge).withdraw(tokenId);
         }
 
-        // 2) Decrease full liquidity & collect to vault
-        _burnAllAndCollect(vault, tokenId);
+        // 1) Collect fees para o ADAPTER (mantém no adapter)
+        ISlipstreamNFPM(nfpm).collect(
+            ISlipstreamNFPM.CollectParams({
+                tokenId: tokenId,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            })
+        );
 
-        // 3) Re-mint with caps if provided (cap0/cap1 in raw units)
-        address token0 = ISlipstreamPool(pool).token0();
-        address token1 = ISlipstreamPool(pool).token1();
-        uint256 amt0 = cap0 > 0 ? cap0 : _balanceOf(token0, vault);
-        uint256 amt1 = cap1 > 0 ? cap1 : _balanceOf(token1, vault);
+        // 2) Remove toda a liquidez (se houver) e coleta "owed"
+        (, , , , , , , uint128 liq, , , , ) = ISlipstreamNFPM(nfpm).positions(tokenId);
+        if (liq > 0) {
+            ISlipstreamNFPM(nfpm).decreaseLiquidity(
+                ISlipstreamNFPM.DecreaseLiquidityParams({
+                    tokenId: tokenId,
+                    liquidity: liq,
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    deadline: block.timestamp
+                })
+            );
+            ISlipstreamNFPM(nfpm).collect(
+                ISlipstreamNFPM.CollectParams({
+                    tokenId: tokenId,
+                    recipient: address(this),
+                    amount0Max: type(uint128).max,
+                    amount1Max: type(uint128).max
+                })
+            );
+        }
+
+        // 3) Burn antigo NFT
+        ISlipstreamNFPM(nfpm).burn(tokenId);
+        _tokenId[vault] = 0;
+
+        // 4) Monta amounts finais respeitando caps; puxa déficits do VAULT
+        (address token0, address token1) = tokens();
+
+        uint256 bal0 = IERC20(token0).balanceOf(address(this));
+        uint256 bal1 = IERC20(token1).balanceOf(address(this));
+
+        uint256 want0 = (cap0 == 0) ? type(uint256).max : cap0;
+        uint256 want1 = (cap1 == 0) ? type(uint256).max : cap1;
+
+        uint256 use0 = bal0;
+        uint256 use1 = bal1;
+
+        if (want0 > use0) {
+            uint256 deficit0 = want0 - use0;
+            uint256 v0 = IERC20(token0).balanceOf(vault);
+            uint256 pull0 = deficit0 > v0 ? v0 : deficit0;
+            if (pull0 > 0) {
+                IERC20(token0).safeTransferFrom(vault, address(this), pull0);
+                use0 += pull0;
+            }
+        }
+        if (want1 > use1) {
+            uint256 deficit1 = want1 - use1;
+            uint256 v1 = IERC20(token1).balanceOf(vault);
+            uint256 pull1 = deficit1 > v1 ? v1 : deficit1;
+            if (pull1 > 0) {
+                IERC20(token1).safeTransferFrom(vault, address(this), pull1);
+                use1 += pull1;
+            }
+        }
+
+        // 5) Mint nova posição (NFT no ADAPTER)
+        _approveIfNeeded(token0, nfpm, use0);
+        _approveIfNeeded(token1, nfpm, use1);
 
         ISlipstreamNFPM.MintParams memory p = ISlipstreamNFPM.MintParams({
             token0: token0,
@@ -149,114 +233,119 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
             tickSpacing: ISlipstreamPool(pool).tickSpacing(),
             tickLower: tickLower,
             tickUpper: tickUpper,
-            amount0Desired: amt0,
-            amount1Desired: amt1,
+            amount0Desired: use0,
+            amount1Desired: use1,
             amount0Min: 0,
             amount1Min: 0,
-            recipient: vault,
+            recipient: address(this),
             deadline: block.timestamp,
             sqrtPriceX96: 0
         });
 
-        (/*tokenId2*/, newLiquidity,,) = ISlipstreamNFPM(nfpm).mint(p);
+        (uint256 newTid, uint128 L,,) = ISlipstreamNFPM(nfpm).mint(p);
+        _tokenId[vault] = newTid;
+        newLiquidity = L;
 
+        // 6) Devolve sobras para o VAULT
+        uint256 r0 = IERC20(token0).balanceOf(address(this));
+        uint256 r1 = IERC20(token1).balanceOf(address(this));
+        if (r0 > 0) IERC20(token0).safeTransfer(vault, r0);
+        if (r1 > 0) IERC20(token1).safeTransfer(vault, r1);
+
+        // 7) Restake (se configurado)
         if (gauge != address(0)) {
-            uint256 nid = currentTokenId(vault);
-            ISlipstreamGauge(gauge).deposit(nid);
+            ISlipstreamGauge(gauge).deposit(newTid);
         }
+
+        lastRebalance[vault] = block.timestamp;
     }
 
     function exitPositionToVault(address vault) external override {
-        uint256 tokenId = currentTokenId(vault);
+        uint256 tokenId = _tokenId[vault];
         if (tokenId == 0) return;
-        _burnAllAndCollect(vault, tokenId);
+
+        // Se staked, retirar
+        if (gauge != address(0) && ISlipstreamGauge(gauge).stakedContains(address(this), tokenId)) {
+            ISlipstreamGauge(gauge).withdraw(tokenId);
+        }
+
+        // collect -> decrease -> collect -> burn (mantendo no adapter)
+        ISlipstreamNFPM(nfpm).collect(ISlipstreamNFPM.CollectParams({
+            tokenId: tokenId,
+            recipient: address(this),
+            amount0Max: type(uint128).max,
+            amount1Max: type(uint128).max
+        }));
+
+        (, , , , , , , uint128 liq, , , , ) = ISlipstreamNFPM(nfpm).positions(tokenId);
+        if (liq > 0) {
+            ISlipstreamNFPM(nfpm).decreaseLiquidity(ISlipstreamNFPM.DecreaseLiquidityParams({
+                tokenId: tokenId,
+                liquidity: liq,
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline: block.timestamp
+            }));
+            ISlipstreamNFPM(nfpm).collect(ISlipstreamNFPM.CollectParams({
+                tokenId: tokenId,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            }));
+        }
+
+        ISlipstreamNFPM(nfpm).burn(tokenId);
+        _tokenId[vault] = 0;
+
+        // Envia todos os saldos ao VAULT
+        (address token0, address token1) = tokens();
+        uint256 b0 = IERC20(token0).balanceOf(address(this));
+        uint256 b1 = IERC20(token1).balanceOf(address(this));
+        if (b0 > 0) IERC20(token0).safeTransfer(vault, b0);
+        if (b1 > 0) IERC20(token1).safeTransfer(vault, b1);
     }
 
-    // function exitPositionAndWithdrawAll(address vault, address to) external override {
-    //     uint256 tokenId = currentTokenId(vault);
-    //     if (tokenId != 0) _burnAllAndCollect(vault, tokenId);
-
-    //     (address t0, address t1) = (ISlipstreamPool(pool).token0(), ISlipstreamPool(pool).token1());
-    //     _xferAll(t0, vault, to);
-    //     _xferAll(t1, vault, to);
-    // }
-
     function collectToVault(address vault) external override returns (uint256 amount0, uint256 amount1) {
-        uint256 tokenId = currentTokenId(vault);
+        uint256 tokenId = _tokenId[vault];
         if (tokenId == 0) return (0, 0);
-        (,,address token0,address token1,,,,,,,,) = ISlipstreamNFPM(nfpm).positions(tokenId);
+
+        // Coleta para o ADAPTER…
         (amount0, amount1) = ISlipstreamNFPM(nfpm).collect(
             ISlipstreamNFPM.CollectParams({
                 tokenId: tokenId,
-                recipient: vault,
+                recipient: address(this),
                 amount0Max: type(uint128).max,
                 amount1Max: type(uint128).max
             })
         );
+
+        // …e envia ao VAULT
+        (address token0, address token1) = tokens();
+        if (amount0 > 0) IERC20(token0).safeTransfer(vault, amount0);
+        if (amount1 > 0) IERC20(token1).safeTransfer(vault, amount1);
     }
 
     // ===== staking helpers =====
 
     function stakePosition(address vault) external override {
         if (gauge == address(0)) return;
-        uint256 tokenId = currentTokenId(vault);
+        uint256 tokenId = _tokenId[vault];
         require(tokenId != 0, "no pos");
         ISlipstreamGauge(gauge).deposit(tokenId);
     }
 
     function unstakePosition(address vault) external override {
         if (gauge == address(0)) return;
-        uint256 tokenId = currentTokenId(vault);
+        uint256 tokenId = _tokenId[vault];
         require(tokenId != 0, "no pos");
         ISlipstreamGauge(gauge).withdraw(tokenId);
     }
 
-    function claimRewards(address /*vault*/) external override {
+    function claimRewards(address vault) external override {
         if (gauge == address(0)) return;
-        // If using tokenId flow:
-        // ISlipstreamGauge(gauge).getReward(tokenId);
-        // Some gauges also support getReward(address). Pick one that exists in your deployment.
-    }
-
-    // ===== internal utils =====
-
-    function _burnAllAndCollect(address vault, uint256 tokenId) internal {
-        (,,,,,int24 tl,int24 tu,uint128 L,,,,) = ISlipstreamNFPM(nfpm).positions(tokenId);
-        if (L > 0) {
-            ISlipstreamNFPM(nfpm).decreaseLiquidity(
-                ISlipstreamNFPM.DecreaseLiquidityParams({
-                    tokenId: tokenId,
-                    liquidity: L,
-                    amount0Min: 0,
-                    amount1Min: 0,
-                    deadline: block.timestamp
-                })
-            );
-        }
-        ISlipstreamNFPM(nfpm).collect(
-            ISlipstreamNFPM.CollectParams({
-                tokenId: tokenId,
-                recipient: vault,
-                amount0Max: type(uint128).max,
-                amount1Max: type(uint128).max
-            })
-        );
-        // If the position must be burned to reset tokenId semantics in your vault, consider NFPM.burn(tokenId)
-        // Only if protocol allows and your vault wants to recreate fresh tokenIds on each rebalance.
-    }
-
-    function _balanceOf(address token, address owner) internal view returns (uint256 bal) {
-        (bool ok, bytes memory data) =
-            token.staticcall(abi.encodeWithSignature("balanceOf(address)", owner));
-        if (ok && data.length >= 32) bal = abi.decode(data, (uint256));
-    }
-
-    function _xferAll(address token, address from, address to) internal {
-        if (to == address(0)) return;
-        uint256 bal = _balanceOf(token, from);
-        if (bal == 0) return;
-        // Vault must perform the transfer itself; or expose a hook that calls token.transfer(to, bal).
-        // Adapters generally should not hold custody. If you want the adapter to move funds,
-        // you need the vault to call adapter as an operator and the adapter must do ERC20 transferFrom.
+        uint256 tokenId = _tokenId[vault];
+        if (tokenId == 0) return;
+        // Preferimos claim por tokenId (há também overload getReward(address))
+        ISlipstreamGauge(gauge).getReward(tokenId);
     }
 }
