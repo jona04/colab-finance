@@ -29,6 +29,9 @@ ABI_VAULT = [
     {"name":"exitPositionToVault","outputs":[],"inputs":[],"stateMutability":"nonpayable","type":"function"},
     {"name":"exitPositionAndWithdrawAll","outputs":[],"inputs":[{"type":"address"}],"stateMutability":"nonpayable","type":"function"},
     {"name":"collectToVault","outputs":[{"type":"uint256"},{"type":"uint256"}],"inputs":[],"stateMutability":"nonpayable","type":"function"},
+    {"name":"stake", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
+    {"name":"unstake", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
+    {"name":"claimRewards", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
 ]
 
 U128_MAX = (1<<128) - 1
@@ -85,7 +88,16 @@ class AerodromeAdapter(DexAdapter):
         except Exception:
             return None
     
-    
+    def adapter_address(self) -> Optional[str]:
+        """Endereço do adapter configurado no Vault V2 (vault.adapter())."""
+        try:
+            addr = self.vault.functions.adapter().call()
+            if int(addr, 16) == 0:
+                return None
+            return Web3.to_checksum_address(addr)
+        except Exception:
+            return None
+        
     # ---- sanity ----
     def assert_is_pool(self):
         try:
@@ -134,11 +146,13 @@ class AerodromeAdapter(DexAdapter):
 
     def vault_state(self) -> Dict[str, Any]:
         """
-        Try to mirror the Uniswap adapter: we assume the vault exposes
-        - positionTokenId()  (uint256)
-        - currentRange() -> (int24 lower, int24 upper, uint128 liq) — optional
-        - twapOk(), lastRebalance() — optional
+        Unifica leitura como no Uniswap e acrescenta gauge/staked:
+          - tokenId, lower, upper, liq
+          - twapOk (sempre True aqui)
+          - lastRebalance, min_cd (adapter)
+          - gauge (addr), hasGauge (bool), staked (bool), adapter (addr)
         """
+        # --- tokenId no Vault (V2 mantém espelho), fallback para view
         token_id = 0
         try:
             token_id = int(self.vault.functions.positionTokenId().call())
@@ -148,6 +162,7 @@ class AerodromeAdapter(DexAdapter):
             except Exception:
                 token_id = 0
 
+        # --- bounds/liquidity (NFPM.positions) ou spot-tick se não há posição
         lower = upper = 0
         liq = 0
         if token_id:
@@ -155,30 +170,51 @@ class AerodromeAdapter(DexAdapter):
             (_n, _op, _t0, _t1, _ts, l, u, L, *_rest) = nfpm.functions.positions(int(token_id)).call()
             lower, upper, liq = int(l), int(u), int(L)
         else:
-            # sem posição: fixa bounds no tick atual
             _, spot_tick = self.slot0()
             lower = upper = int(spot_tick)
             liq = 0
 
-        d = {"tokenId": token_id, "lower": lower, "upper": upper, "liq": liq}
-        
+        # --- adapter infos
+        ad_addr = self.adapter_address()
         ad = self.adapter_contract()
+        min_cd = 0
+        last_reb = 0
         if ad:
             try:
-                d["min_cd"] = int(ad.functions.minCooldown().call())
+                min_cd = int(ad.functions.minCooldown().call())
             except Exception:
-                d["min_cd"] = 0
+                pass
             try:
-                d["lastRebalance"] = int(ad.functions.lastRebalance(self.vault.address).call())
+                last_reb = int(ad.functions.lastRebalance(self.vault.address).call())
             except Exception:
-                d["lastRebalance"] = 0
-        else:
-            d["min_cd"] = 0
-            d["lastRebalance"] = 0
+                pass
 
-        # twapOk: SlipstreamAdapter.sol não expõe; marcamos True por padrão
-        d["twapOk"] = True
-        return d
+        # --- gauge & staked
+        g_addr = self.gauge_address()
+        has_gauge = bool(g_addr)
+        staked = False
+        if has_gauge and token_id:
+            try:
+                g = self.gauge_contract()
+                # o depositante é o ADAPTER (owner do NFT). fallback: tentar o vault.
+                depositor = ad_addr if ad_addr else self.vault.address
+                staked = bool(g.functions.stakedContains(Web3.to_checksum_address(depositor), int(token_id)).call())
+            except Exception:
+                staked = False
+
+        return {
+            "tokenId": token_id,
+            "lower": lower,
+            "upper": upper,
+            "liq": liq,
+            "twapOk": True,                 # SlipstreamAdapter não expõe twapOk()
+            "lastRebalance": last_reb,
+            "min_cd": min_cd,
+            "gauge": g_addr,
+            "hasGauge": has_gauge,
+            "staked": staked,
+            "adapter": ad_addr,
+        }
 
     def amounts_in_position_now(self, lower: int, upper: int, liq: int) -> Tuple[int, int]:
         """
@@ -203,7 +239,8 @@ class AerodromeAdapter(DexAdapter):
         ).call()
         return int(a0), int(a1)
 
-        # ---------- gauge reads ----------
+    # ---------- gauge reads ----------
+        
     def gauge_preview_earned(self, account: str, token_id: int) -> int:
         """
         Read claimable rewards for (account, tokenId). Returns 0 if no gauge.
@@ -262,47 +299,28 @@ class AerodromeAdapter(DexAdapter):
         return c.functions.transfer(self.vault.address, int(amount_raw))
 
     # ---------- gauge writes ----------
-    def fn_gauge_stake(self, token_id: Optional[int] = None):
+    def fn_stake_nft(self):
         """
-        Stake position tokenId into pool's gauge. If token_id is None, will attempt to read
-        from vault.positionTokenId().
+        Chama Vault.stake() -> Adapter.stakePosition(vault) -> Gauge.deposit(tokenId).
+        Use este método no endpoint (NÃO chame o gauge direto).
         """
-        g = self.gauge_contract()
-        if not g:
-            raise NotImplementedError("Pool has no gauge()")
-        if token_id is None:
-            # tenta ler do vault
-            try:
-                token_id = int(self.vault.functions.positionTokenId().call())
-            except Exception:
-                token_id = int(self.vault.functions.positionTokenIdView().call())
-        if not token_id:
-            raise ValueError("No position tokenId to stake")
-        return g.functions.deposit(int(token_id))
-
-    def fn_gauge_unstake(self, token_id: Optional[int] = None):
-        g = self.gauge_contract()
-        if not g:
-            raise NotImplementedError("Pool has no gauge()")
-        if token_id is None:
-            try:
-                token_id = int(self.vault.functions.positionTokenId().call())
-            except Exception:
-                token_id = int(self.vault.functions.positionTokenIdView().call())
-        if not token_id:
-            raise ValueError("No position tokenId to unstake")
-        return g.functions.withdraw(int(token_id))
-
-    def fn_gauge_claim(self, token_id: Optional[int] = None):
-        g = self.gauge_contract()
-        if not g:
-            raise NotImplementedError("Pool has no gauge()")
-        if token_id is None:
-            try:
-                token_id = int(self.vault.functions.positionTokenId().call())
-            except Exception:
-                token_id = int(self.vault.functions.positionTokenIdView().call())
-        if not token_id:
-            raise ValueError("No position tokenId to claim")
-        # Gauge tem 2 overloads; aqui usamos a do tokenId
-        return g.functions.getReward(int(token_id))
+        if hasattr(self.vault.functions, "stake"):
+            return self.vault.functions.stake()
+        raise NotImplementedError("Use vault.stake() via fn_stake_nft()")
+    
+    def fn_unstake_nft(self):
+        """
+        Chama Vault.unstake() -> Adapter.unstakePosition(vault) -> Gauge.withdraw(tokenId).
+        """
+        if hasattr(self.vault.functions, "unstake"):
+            return self.vault.functions.unstake()
+        raise NotImplementedError("Use vault.unstake() via fn_unstake_nft()")
+    
+    def fn_claim_rewards(self):
+        """
+        Chama Vault.claimRewards() -> Adapter.claimRewards(vault) -> Gauge.getReward(...).
+        """
+        if hasattr(self.vault.functions, "claimRewards"):
+            return self.vault.functions.claimRewards()
+        raise NotImplementedError("Use vault.claimRewards() via fn_claim_rewards()")
+    

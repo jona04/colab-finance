@@ -1,5 +1,5 @@
 {
-  "active": "vault2",
+  "active": "vault4",
   "vaults": {
     "vault1": {
       "address": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
@@ -16,6 +16,24 @@
       "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
       "nfpm": "0x827922686190790b37229fd06084350E74485b72",
       "gauge": "0x0000000000000000000000000000000000000000",
+      "rpc_url": "http://127.0.0.1:8545",
+      "version": "v2"
+    },
+    "vault3": {
+      "address": "0x7b3fe7A9c91db3e0526722CcEB66DB6F4D97D7be",
+      "adapter": "0x35CCEa4b80c61484f554EaDC8Ed8686491eaF201",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+      "rpc_url": "http://127.0.0.1:8545",
+      "version": "v2"
+    },
+    "vault4": {
+      "address": "0xa81761dE856477302a255801c11cDf7292108c16",
+      "adapter": "0x32CE2A475D5709cA091Ab3721Ce02b0CF659a00A",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
       "rpc_url": "http://127.0.0.1:8545",
       "version": "v2"
     }

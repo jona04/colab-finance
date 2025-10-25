@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 from datetime import datetime
+import token
 from fastapi import APIRouter, HTTPException, Body
 from web3 import Web3
 
@@ -485,21 +486,15 @@ def stake_nft(dex: str, alias: str, req: StakeRequest):
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
 
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
-    # opcional: deixar por config; ou se salvou no registry, passe via extra:
-    # ad.extra = {"voter": v.get("voter")}  # se você salvar no vault_repo
 
-    token_id = int(req.token_id or ad.vault.functions.positionTokenId().call())
-    if token_id == 0:
-        raise HTTPException(400, "No active position tokenId")
-
-    txh = TxService(v.get("rpc_url")).send(ad.fn_gauge_stake(token_id))
+    # chama o fluxo correto via Vault -> Adapter -> Gauge
+    txh = TxService(v.get("rpc_url")).send(ad.fn_stake_nft())
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "stake_gauge",
-        "tokenId": token_id,
         "tx": txh
     })
-    return {"tx": txh, "tokenId": token_id}
+    return {"tx": txh}
 
 
 @router.post("/vaults/{dex}/{alias}/unstake")
@@ -509,18 +504,14 @@ def unstake_nft(dex: str, alias: str, req: UnstakeRequest):
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
 
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
-    token_id = int(req.token_id or ad.vault.functions.positionTokenId().call())
-    if token_id == 0:
-        raise HTTPException(400, "No active position tokenId")
 
-    txh = TxService(v.get("rpc_url")).send(ad.fn_gauge_unstake(token_id))
+    txh = TxService(v.get("rpc_url")).send(ad.fn_unstake_nft())
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "unstake_gauge",
-        "tokenId": token_id,
         "tx": txh
     })
-    return {"tx": txh, "tokenId": token_id}
+    return {"tx": txh}
 
 @router.post("/vaults/{dex}/{alias}/claim")
 def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
@@ -530,31 +521,15 @@ def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
 
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
 
-    if req.mode == "account":
-        if not req.account:
-            raise HTTPException(400, "account is required when mode='account'")
-        # Aerodrome gauge tem overload getReward(account); chame direto via adapter, se exposto.
-        g = ad.gauge_contract()
-        if not g:
-            raise HTTPException(400, "Pool has no gauge")
-        fn = g.functions.getReward(Web3.to_checksum_address(req.account))
-    else:
-        # default: via tokenId
-        token_id = int(req.token_id or ad.vault.functions.positionTokenId().call())
-        if token_id == 0:
-            raise HTTPException(400, "No active position tokenId")
-        fn = ad.fn_gauge_claim(token_id)
-
-    txh = TxService(v.get("rpc_url")).send(fn)
+    # sempre via Vault/Adapter; o Adapter tenta ambas variantes de getReward
+    txh = TxService(v.get("rpc_url")).send(ad.fn_claim_rewards())
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "claim_rewards",
-        "by": req.mode,
-        "tokenId": req.token_id,
-        "account": req.account,
+        "by": "adapter",
         "tx": txh
     })
-    return {"tx": txh, "mode": req.mode}
+    return {"tx": txh, "mode": "adapter"}
 
 @router.post("/vaults/{dex}/{alias}/swap/quote")
 def swap_quote(dex: str, alias: str, req: SwapQuoteRequest):

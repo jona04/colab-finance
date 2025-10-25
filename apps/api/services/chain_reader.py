@@ -114,29 +114,40 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
     last_rebalance = int(vstate.get("lastRebalance", 0))
     min_cd = int(vstate.get("min_cd", 0))
 
+    # --- gauge & staking flags
+    gauge_addr = vstate.get("gauge")
+    has_gauge = bool(gauge_addr)
+    is_staked = bool(vstate.get("staked", False))
+    token_id = int(vstate.get("tokenId", 0) or 0)
+
+    # position location
+    if token_id == 0:
+        position_location = "none"
+    else:
+        position_location = "gauge" if is_staked else "pool"
+
     now = adapter.w3.eth.get_block("latest").timestamp
     cooldown_remaining_seconds = int(last_rebalance + min_cd - now)
     cooldown_active = cooldown_remaining_seconds > 0
 
     # ---- prices
-    p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)  # token1 per token0
+    p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)
     p_t0_t1 = (0.0 if p_t1_t0 == 0 else 1.0 / p_t1_t0)
 
     out_of_range = tick < lower or tick >= upper
     pct_outside_tick = _pct_from_dtick((lower - tick) if (out_of_range and tick < lower) else (tick - upper)) if out_of_range else 0.0
 
-    # ---- uncollected fees (preview from NFPM via callStatic)
+    # ---- uncollected fees (preview)
     fees0 = fees1 = 0
-    token_id = int(vstate.get("tokenId", 0) or 0)
     if token_id != 0:
         fees0, fees1 = adapter.call_static_collect(token_id, adapter.vault.address)
     fees0_h = float(fees0) / (10 ** dec0)
     fees1_h = float(fees1) / (10 ** dec1)
     fees_usd = _value_usd(fees0_h, fees1_h, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
 
-    # ---- balances (NO subtraction of 'fees_collected_cum' anymore)
-    erc0 = adapter.erc20(meta["token0"])
-    erc1 = adapter.erc20(meta["token1"])
+    # ---- balances
+    erc0 = adapter.erc20(t0_addr)
+    erc1 = adapter.erc20(t1_addr)
     bal0_idle_raw = int(erc0.functions.balanceOf(adapter.vault.address).call())
     bal1_idle_raw = int(erc1.functions.balanceOf(adapter.vault.address).call())
 
@@ -145,28 +156,26 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
         a0, a1 = adapter.amounts_in_position_now(lower, upper, liq)
         amt0_pos_raw, amt1_pos_raw = int(a0), int(a1)
 
-    # human amounts
     adj0_idle = bal0_idle_raw / (10 ** dec0)
     adj1_idle = bal1_idle_raw / (10 ** dec1)
     amt0_pos = amt0_pos_raw / (10 ** dec0)
     amt1_pos = amt1_pos_raw / (10 ** dec1)
-    
+
     tot0 = adj0_idle + amt0_pos
     tot1 = adj1_idle + amt1_pos
-    
+
     idle_usd = _value_usd(adj0_idle, adj1_idle, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
     pos_usd  = _value_usd(amt0_pos,  amt1_pos,  p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
     total_usd = _value_usd(tot0, tot1, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
 
-    # ---- cumulative fees already collected (from state)
+    # ---- cumulative fees already collected
     cum = st.get("fees_collected_cum", {"token0_raw": 0, "token1_raw": 0}) or {}
     cum0_raw = int(cum.get("token0_raw", 0) or 0)
     cum1_raw = int(cum.get("token1_raw", 0) or 0)
     cum0 = cum0_raw / (10 ** dec0)
     cum1 = cum1_raw / (10 ** dec1)
     cum_usd = _value_usd(cum0, cum1, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
-    
-    # ---- baseline handling
+
     baseline = st.get("vault_initial_usd")
     if baseline is None:
         baseline = total_usd
@@ -193,11 +202,10 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
         symbols={"token0": sym0, "token1": sym1},
         addresses={"token0": t0_addr, "token1": t1_addr},
     )
-    
+
     fees_uncollected = FeesUncollected(
         token0=fees0_h, token1=fees1_h, usd=float(fees_usd), sym0=sym0, sym1=sym1
     )
-
 
     fees_collected_cum = FeesCollectedCum(
         token0_raw=cum0_raw,
@@ -206,7 +214,7 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
         token1=cum1,
         usd=float(cum_usd),
     )
-    
+
     range_side = "inside" if not out_of_range else ("below" if tick < lower else "above")
 
     return StatusCore(
@@ -228,4 +236,8 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
         sym0=sym0,
         sym1=sym1,
         holdings=holdings,
+        has_gauge=has_gauge,
+        gauge=gauge_addr,
+        staked=is_staked,
+        position_location=position_location,
     )

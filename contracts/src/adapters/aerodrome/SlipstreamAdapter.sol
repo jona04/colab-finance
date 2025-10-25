@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IERC721Receiver} from "openzeppelin-contracts/contracts/token/ERC721/IERC721Receiver.sol";
 
 import "../../interfaces/IConcentratedLiquidityAdapter.sol";
 import "./interfaces/ISlipstreamPool.sol";
@@ -15,7 +16,7 @@ import "./interfaces/ISlipstreamGauge.sol";
  * It wraps the Slipstream NFPM & Pool, and optionally stakes the resulting NFT into a Gauge.
  * All token flows happen between the Vault and protocol contracts; the adapter holds nothing.
  */
-contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
+contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
     using SafeERC20 for IERC20;
 
     address public immutable override pool;
@@ -42,6 +43,15 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         gauge = _gauge; // can be 0x0 if you don't want staking
     }
 
+    function onERC721Received(
+        address /*operator*/,
+        address /*from*/,
+        uint256 /*tokenId*/,
+        bytes calldata /*data*/
+    ) external pure override returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
     function tickSpacing() external view override returns (int24) {
         return ISlipstreamPool(pool).tickSpacing();
     }
@@ -50,7 +60,7 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         (sqrtPriceX96, tick,,,,) = ISlipstreamPool(pool).slot0();
     }
 
-    function tokens() external view override returns (address token0, address token1) {
+    function tokens() public view override returns (address token0, address token1) {
         token0 = ISlipstreamPool(pool).token0();
         token1 = ISlipstreamPool(pool).token1();
     }
@@ -80,6 +90,11 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
             IERC20(token).forceApprove(spender, 0);
             IERC20(token).forceApprove(spender, type(uint256).max);
         }
+    }
+
+    function _isStaked(uint256 tokenId) internal view returns (bool) {
+        if (gauge == address(0) || tokenId == 0) return false;
+        return ISlipstreamGauge(gauge).stakedContains(address(this), tokenId);
     }
 
     // ===== mutations (IConcentratedLiquidityAdapter) =====
@@ -131,12 +146,6 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         if (r0 > 0) IERC20(token0).safeTransfer(vault, r0);
         if (r1 > 0) IERC20(token1).safeTransfer(vault, r1);
 
-        // Stake (opcional)
-        if (gauge != address(0)) {
-            // Como o ADAPTER é dono, pode depositar diretamente
-            ISlipstreamGauge(gauge).deposit(tokenId);
-        }
-
         lastRebalance[vault] = block.timestamp;
     }
 
@@ -150,11 +159,8 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
     ) external override returns (uint128 newLiquidity) {
         uint256 tokenId = _tokenId[vault];
         require(tokenId != 0, "no position");
-
-        // 0) Se staked, desestacar primeiro
-        if (gauge != address(0) && ISlipstreamGauge(gauge).stakedContains(address(this), tokenId)) {
-            ISlipstreamGauge(gauge).withdraw(tokenId);
-        }
+        
+        require(!_isStaked(tokenId), "staked");
 
         // 1) Collect fees para o ADAPTER (mantém no adapter)
         ISlipstreamNFPM(nfpm).collect(
@@ -252,11 +258,6 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         if (r0 > 0) IERC20(token0).safeTransfer(vault, r0);
         if (r1 > 0) IERC20(token1).safeTransfer(vault, r1);
 
-        // 7) Restake (se configurado)
-        if (gauge != address(0)) {
-            ISlipstreamGauge(gauge).deposit(newTid);
-        }
-
         lastRebalance[vault] = block.timestamp;
     }
 
@@ -264,12 +265,19 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         uint256 tokenId = _tokenId[vault];
         if (tokenId == 0) return;
 
-        // Se staked, retirar
-        if (gauge != address(0) && ISlipstreamGauge(gauge).stakedContains(address(this), tokenId)) {
+        // Se staked, faça claim e retire para permitir o exit (qualquer ordem externa deve funcionar)
+        if (_isStaked(tokenId)) {
+            // best-effort claim
+            if (gauge != address(0)) {
+                // tokenId-variant
+                try ISlipstreamGauge(gauge).getReward(tokenId) {} catch {}
+                // account-variant (adapter como "depositor")
+                try ISlipstreamGauge(gauge).getReward(address(this)) {} catch {}
+            }
             ISlipstreamGauge(gauge).withdraw(tokenId);
         }
 
-        // collect -> decrease -> collect -> burn (mantendo no adapter)
+        // collect -> decrease -> collect -> burn (fundos ficam no adapter e depois enviamos ao vault)
         ISlipstreamNFPM(nfpm).collect(ISlipstreamNFPM.CollectParams({
             tokenId: tokenId,
             recipient: address(this),
@@ -331,6 +339,10 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         if (gauge == address(0)) return;
         uint256 tokenId = _tokenId[vault];
         require(tokenId != 0, "no pos");
+        // garantir aprovação do gauge para mover o NFT
+        try ISlipstreamNFPM(nfpm).setApprovalForAll(gauge, true) {} catch {
+            // alguns NFPM podem exigir approve(tokenId); se precisar, adicione na interface e use aqui
+        }
         ISlipstreamGauge(gauge).deposit(tokenId);
     }
 
@@ -338,6 +350,13 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         if (gauge == address(0)) return;
         uint256 tokenId = _tokenId[vault];
         require(tokenId != 0, "no pos");
+        // claim antes do withdraw (best-effort)
+        bool claimed = false;
+        try ISlipstreamGauge(gauge).getReward(tokenId) { claimed = true; } catch {}
+        try ISlipstreamGauge(gauge).getReward(address(this)) { claimed = true; } catch {}
+
+        require(claimed, "not claimed");
+
         ISlipstreamGauge(gauge).withdraw(tokenId);
     }
 
@@ -345,7 +364,8 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter {
         if (gauge == address(0)) return;
         uint256 tokenId = _tokenId[vault];
         if (tokenId == 0) return;
-        // Preferimos claim por tokenId (há também overload getReward(address))
-        ISlipstreamGauge(gauge).getReward(tokenId);
+        // tentar ambas variantes
+        try ISlipstreamGauge(gauge).getReward(tokenId) {} catch {}
+        try ISlipstreamGauge(gauge).getReward(address(this)) {} catch {}
     }
 }

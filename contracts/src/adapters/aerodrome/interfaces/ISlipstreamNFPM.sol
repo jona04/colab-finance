@@ -49,4 +49,6 @@ interface ISlipstreamNFPM {
         uint128 tokensOwed1
     );
     function burn(uint tokenId) external;
+
+    function setApprovalForAll(address operator, bool approved) external;
 }

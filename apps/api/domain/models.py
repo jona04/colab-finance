@@ -143,6 +143,11 @@ class StatusCore(BaseModel):
     sym1: str
     holdings: HoldingsBlock
 
+    has_gauge: bool = False
+    gauge: Optional[str] = None
+    staked: Optional[bool] = None
+    position_location: Literal["none", "pool", "gauge"] = "none"
+
 # Resposta completa do endpoint
 class StatusResponse(StatusCore):
     alias: str

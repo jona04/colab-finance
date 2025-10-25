@@ -1,0 +1,62 @@
+{
+  "vault_address": "0xa81761dE856477302a255801c11cDf7292108c16",
+  "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+  "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+  "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+  "created_at": "2025-10-25T14:22:57.992829",
+  "positions": [],
+  "fees_collected_cum": {
+    "token0_raw": 0,
+    "token1_raw": 0
+  },
+  "fees_cum_usd": 0.0,
+  "exec_history": [
+    {
+      "ts": "2025-10-25T14:22:57.993205",
+      "mode": "deploy_vault_v2",
+      "vault": "0xa81761dE856477302a255801c11cDf7292108c16",
+      "adapter": "0x32CE2A475D5709cA091Ab3721Ce02b0CF659a00A",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+      "tx_adapter": "be307a5d01135edec903f169593a75b3037eaef47eabc0bc6a1737f94ee0b0ab",
+      "tx_vault": "726020cf3f8181ff86f05432c0c97a8fcc8d785f31997dc32006b611a397d8e6"
+    },
+    {
+      "ts": "2025-10-25T14:23:13.823380",
+      "mode": "deposit",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.1,
+      "tx": "abe6102584e0dc49c587c598c89ea6043aab7a0745d340dc24fe9d3bacea5098"
+    },
+    {
+      "ts": "2025-10-25T14:23:36.969015",
+      "mode": "open",
+      "lower": -192040,
+      "upper": -191540,
+      "tx": "625145ec4a14b36c332df8efa866bdc469d3536543cbff1de96e6afefbe9d5d5"
+    },
+    {
+      "ts": "2025-10-25T14:24:11.482625",
+      "mode": "stake_gauge",
+      "tx": "9b76e47271e7c8d614d163e2e5c8f795bc0af7deab6f4a7acb05722418f7aa9b"
+    },
+    {
+      "ts": "2025-10-25T14:24:21.311859",
+      "mode": "unstake_gauge",
+      "tx": "cbf7395e85330564f2b3a774749b017b2f189127bcafe258cce9fa945672ae96"
+    }
+  ],
+  "collect_history": [],
+  "deposit_history": [
+    {
+      "ts": "2025-10-25T14:23:13.822990",
+      "token": "0x4200000000000000000000000000000000000006",
+      "amount_human": 0.1,
+      "amount_raw": 100000000000000000,
+      "tx": "abe6102584e0dc49c587c598c89ea6043aab7a0745d340dc24fe9d3bacea5098"
+    }
+  ],
+  "error_history": [],
+  "vault_initial_usd": 422.1894442780622
+}
