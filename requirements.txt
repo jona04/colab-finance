@@ -8,3 +8,15 @@ requests==2.32.3
 python-telegram-bot==22.5
 fastapi
 uvicorn[standard]
+
+# api signals
+
+fastapi
+uvicorn[standard]
+binance-connector
+motor
+pydantic
+structlog
+tenacity
+pybreaker
+python-dotenv

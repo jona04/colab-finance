@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:6.0
+    container_name: mongo
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api-signals:
+    build:
+      context: ../
+      dockerfile: ./apps/api-signals/Dockerfile
+    container_name: api-signals
+    restart: always
+    env_file:
+      - ../.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    command: >
+      uvicorn apps.api-signals.main:app
+      --host 0.0.0.0 --port 8080
+
+volumes:
+  mongo_data:
