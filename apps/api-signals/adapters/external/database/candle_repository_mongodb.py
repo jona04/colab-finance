@@ -1,5 +1,5 @@
 import time
-from typing import Dict
+from typing import Dict, List, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -22,12 +22,18 @@ class CandleRepositoryMongoDB(CandleRepository):
 
     async def ensure_indexes(self) -> None:
         """
-        Create a unique compound index on (symbol, interval, open_time) for idempotency.
+        Create a unique compound index on (symbol, interval, open_time) for idempotency
+        and a non-unique index on (symbol, interval, close_time) for reads.
         """
         await self._collection.create_index(
             [("symbol", 1), ("interval", 1), ("open_time", 1)],
             unique=True,
             name="ux_symbol_interval_open_time",
+        )
+        await self._collection.create_index(
+            [("symbol", 1), ("interval", 1), ("close_time", 1)],
+            unique=False,
+            name="ix_symbol_interval_close_time",
         )
 
     async def upsert_closed_candle(self, candle_doc: Dict) -> None:
@@ -57,3 +63,33 @@ class CandleRepositoryMongoDB(CandleRepository):
             "$setOnInsert": {"created_at": now_ms},
         }
         await self._collection.update_one(key, update, upsert=True)
+
+    async def get_last_n_closed(self, symbol: str, interval: str, n: int) -> List[Dict]:
+        """
+        Return the last N closed candles sorted ascending by close_time.
+        """
+        cursor = self._collection.find(
+            {"symbol": symbol, "interval": interval, "is_closed": True},
+            projection={
+                "_id": False, "symbol": True, "interval": True,
+                "open_time": True, "close_time": True,
+                "open": True, "high": True, "low": True, "close": True,
+                "volume": True, "trades": True, "is_closed": True
+            },
+            sort=[("close_time", -1)],
+            limit=max(1, n),
+        )
+        items = await cursor.to_list(length=max(1, n))
+        items.reverse()  # ascending
+        return items
+
+    async def get_last_closed(self, symbol: str, interval: str) -> Optional[Dict]:
+        """
+        Return the most recent closed candle for the given symbol and interval.
+        """
+        doc = await self._collection.find_one(
+            {"symbol": symbol, "interval": interval, "is_closed": True},
+            sort=[("close_time", -1)],
+            projection={"_id": False}
+        )
+        return doc

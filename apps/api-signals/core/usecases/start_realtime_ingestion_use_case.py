@@ -1,15 +1,17 @@
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..repositories.candle_repository import CandleRepository
 from ..repositories.processing_offset_repository import ProcessingOffsetRepository
 from ...adapters.external.binance.binance_websocket_client import BinanceWebsocketClient  # type: ignore
+from .compute_indicators_use_case import ComputeIndicatorsUseCase
 
 
 class StartRealtimeIngestionUseCase:
     """
     Use case that subscribes to Binance kline_1m websocket for a given symbol and,
     whenever a CLOSED candle arrives, upserts it into MongoDB and updates the processing offset.
+    Optionally triggers indicator computation for the symbol.
     """
 
     def __init__(
@@ -19,6 +21,7 @@ class StartRealtimeIngestionUseCase:
         websocket_client: BinanceWebsocketClient,
         candle_repository: CandleRepository,
         processing_offset_repository: ProcessingOffsetRepository,
+        compute_indicators_use_case: Optional[ComputeIndicatorsUseCase] = None,
         logger: logging.Logger | None = None,
     ):
         """
@@ -27,15 +30,17 @@ class StartRealtimeIngestionUseCase:
         :param websocket_client: BinanceWebsocketClient instance.
         :param candle_repository: Candle repository.
         :param processing_offset_repository: Offsets repository.
+        :param compute_indicators_use_case: Optional indicators computation use case.
         :param logger: Optional logger.
         """
-        self._symbol = symbol.lower()
+        self._symbol = symbol.upper()
         self._interval = interval
         self._ws = websocket_client
         self._candle_repo = candle_repository
         self._offset_repo = processing_offset_repository
+        self._compute_indicators = compute_indicators_use_case
         self._logger = logger or logging.getLogger(self.__class__.__name__)
-        self._stream_key = f"{self._symbol}_{self._interval}"
+        self._stream_key = f"{symbol.lower()}_{self._interval}"
 
     async def execute(self) -> None:
         """
@@ -48,7 +53,7 @@ class StartRealtimeIngestionUseCase:
     async def _on_kline_closed(self, event: Dict[str, Any]) -> None:
         """
         Async callback invoked when a CLOSED kline is received.
-        Maps the event into our document format and persists it.
+        Maps the event into our document format and persists it. Then, optionally, computes indicators.
         """
         try:
             k = event["k"]
@@ -70,9 +75,14 @@ class StartRealtimeIngestionUseCase:
             await self._offset_repo.set_last_closed_open_time(self._stream_key, candle_doc["open_time"])
             self._logger.debug(
                 "Upserted candle %s %s open_time=%s",
-                candle_doc["symbol"],
-                candle_doc["interval"],
-                candle_doc["open_time"],
+                candle_doc["symbol"], candle_doc["interval"], candle_doc["open_time"],
             )
+
+            # Trigger indicators (optional)
+            if self._compute_indicators is not None:
+                await self._compute_indicators.execute_for_symbol_interval(
+                    symbol=self._symbol,
+                    interval=self._interval,
+                )
         except Exception as exc:
             self._logger.exception("Failed to process closed kline: %s", exc)

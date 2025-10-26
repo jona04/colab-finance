@@ -18,7 +18,7 @@ services:
   api-signals:
     build:
       context: ../
-      dockerfile: apps/api-signals/Dockerfile
+      dockerfile: ./apps/api-signals/Dockerfile
     container_name: api-signals
     restart: always
     env_file:
@@ -28,9 +28,18 @@ services:
         condition: service_healthy
     ports:
       - "8080:8080"
+    volumes:
+      - ../:/app:delegated
+    working_dir: /app
     command: >
       uvicorn apps.api-signals.main:app
       --host 0.0.0.0 --port 8080
+      --reload
+      --reload-dir apps/api-signals
+      --reload-exclude ".venv/*"
+      --reload-exclude "venv/*"
+      --reload-exclude ".git/*"
+      --reload-exclude "data/*"
 
 volumes:
   mongo_data:
