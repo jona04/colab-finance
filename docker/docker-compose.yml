@@ -18,11 +18,11 @@ services:
   api-signals:
     build:
       context: ../
-      dockerfile: ./apps/api-signals/Dockerfile
+      dockerfile: apps/api-signals/Dockerfile
     container_name: api-signals
     restart: always
     env_file:
-      - ../.env
+      - ../apps/api-signals/.env
     depends_on:
       mongo:
         condition: service_healthy
