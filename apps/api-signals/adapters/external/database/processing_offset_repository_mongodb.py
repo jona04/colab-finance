@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone
 from typing import Optional, Dict
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -35,13 +36,18 @@ class ProcessingOffsetRepositoryMongoDB(ProcessingOffsetRepository):
         Upsert last closed candle open time and update last_sync_at.
         """
         now_ms = int(time.time() * 1000)
+        now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        
         key = {"stream": stream}
         update = {
             "$set": {
                 "last_closed_open_time": open_time_ms,
                 "last_sync_at": now_ms,
             },
-            "$setOnInsert": {"created_at": now_ms},
+            "$setOnInsert": {
+                "created_at": now_ms,
+                "created_at_iso": now_iso,
+                },
         }
         await self._collection.update_one(key, update, upsert=True)
 

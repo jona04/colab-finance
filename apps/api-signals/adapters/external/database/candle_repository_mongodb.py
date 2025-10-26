@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -43,6 +44,8 @@ class CandleRepositoryMongoDB(CandleRepository):
         Adds/refreshes updated_at; sets created_at on insert.
         """
         now_ms = int(time.time() * 1000)
+        now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        
         key = {
             "symbol": candle_doc["symbol"],
             "interval": candle_doc["interval"],
@@ -60,7 +63,10 @@ class CandleRepositoryMongoDB(CandleRepository):
                 "is_closed": True,
                 "updated_at": now_ms,
             },
-            "$setOnInsert": {"created_at": now_ms},
+            "$setOnInsert": {
+                "created_at": now_ms,
+                "created_at_iso": now_iso,
+                },
         }
         await self._collection.update_one(key, update, upsert=True)
 
