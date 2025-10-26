@@ -46,6 +46,7 @@ class IndicatorRepositoryMongoDB(IndicatorRepository):
         """
         now_ms = int(time.time() * 1000)
         now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        
         key = {"symbol": snapshot["symbol"], "ts": snapshot["ts"]}
         update = {
             "$set": {**snapshot, "updated_at": now_ms},
