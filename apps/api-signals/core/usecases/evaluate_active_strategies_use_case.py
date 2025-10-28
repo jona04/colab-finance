@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, List, Optional, Tuple
 
-from core.services.strategy_reconciler_service import StrategyReconcilerService
+from ..services.strategy_reconciler_service import StrategyReconcilerService
 
 from ..repositories.strategy_repository import StrategyRepository
 from ..repositories.strategy_episode_repository import StrategyEpisodeRepository
