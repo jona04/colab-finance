@@ -20,7 +20,8 @@ class StrategyReconcilerService:
         :param desired: Current OPEN episode doc (desired state).
         :param symbol: Trading symbol.
         """
-        lp = await self._lp.get_status(strategy_id)
+        # lp = await self._lp.get_status(strategy_id)
+        lp = None
         Pa_des = desired["Pa"]; Pb_des = desired["Pb"]
 
         if not lp or not lp.get("pool_exists", False):

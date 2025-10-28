@@ -24,7 +24,6 @@ class StrategyEpisodeRepositoryMongoDB(StrategyEpisodeRepository):
     async def get_open_by_strategy(self, strategy_id: str) -> Optional[Dict]:
         return await self._col.find_one(
             {"strategy_id": strategy_id, "status": "OPEN"},
-            projection={"_id": False},
         )
 
     async def open_new(self, doc: Dict) -> Dict:

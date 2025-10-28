@@ -28,7 +28,7 @@ class EvaluateActiveStrategiesUseCase:
         self._episode_repo = episode_repo
         self._signal_repo = signal_repo
         self._reconciler = reconciling_service
-        self._log = logger or logging.getLogger(self.__class__.__name__)
+        self._logger = logger or logging.getLogger(self.__class__.__name__)
 
     @staticmethod
     def _trend_at(ema_fast_val: float, ema_slow_val: float) -> str:
@@ -197,6 +197,7 @@ class EvaluateActiveStrategiesUseCase:
                         chosen_tier = tier
                         break
                 if chosen_tier and (i_since_open >= cooloff):
+                    self._logger.info(f"Tier : {chosen_tier}")
                     trigger = f"tighten_{chosen_tier['name']}"
                 # persist updated streaks even if no trigger
                 await self._episode_repo.update_partial(current["_id"], {"atr_streak": streaks, "last_event_bar": i_since_open})
