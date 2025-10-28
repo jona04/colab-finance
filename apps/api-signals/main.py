@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from .adapters.entry.http.admin_router import router as admin_router
+
 from .workers.realtime_supervisor import RealtimeSupervisor
 
 
@@ -29,6 +31,11 @@ async def lifespan(app: FastAPI):
     _setup_logging()
     logging.getLogger(__name__).info("Starting api-signals (lifespan startup)...")
     await supervisor.start()
+    
+    app.state.db = supervisor.db
+    
+    app.include_router(admin_router)
+    
     try:
         yield
     finally:
@@ -37,7 +44,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="api-signals", version="0.1.0", lifespan=lifespan)
-
 
 @app.get("/healthz")
 async def healthz():

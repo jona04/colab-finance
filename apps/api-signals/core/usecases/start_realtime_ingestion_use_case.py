@@ -2,6 +2,8 @@ import logging
 from typing import Any, Dict, Optional
 
 from ..repositories.candle_repository import CandleRepository
+from ..repositories.indicator_set_repository import IndicatorSetRepository
+from ..usecases.evaluate_active_strategies_use_case import EvaluateActiveStrategiesUseCase
 from ..repositories.processing_offset_repository import ProcessingOffsetRepository
 from ...adapters.external.binance.binance_websocket_client import BinanceWebsocketClient  # type: ignore
 from .compute_indicators_use_case import ComputeIndicatorsUseCase
@@ -22,6 +24,8 @@ class StartRealtimeIngestionUseCase:
         candle_repository: CandleRepository,
         processing_offset_repository: ProcessingOffsetRepository,
         compute_indicators_use_case: Optional[ComputeIndicatorsUseCase] = None,
+        indicator_set_repo: Optional[IndicatorSetRepository] = None,
+        evaluate_use_case: Optional[EvaluateActiveStrategiesUseCase] = None,
         logger: logging.Logger | None = None,
     ):
         """
@@ -39,9 +43,11 @@ class StartRealtimeIngestionUseCase:
         self._candle_repo = candle_repository
         self._offset_repo = processing_offset_repository
         self._compute_indicators = compute_indicators_use_case
+        self._indicator_set_repo = indicator_set_repo
+        self._evaluate_uc = evaluate_use_case
         self._logger = logger or logging.getLogger(self.__class__.__name__)
         self._stream_key = f"{symbol.lower()}_{self._interval}"
-
+        
     async def execute(self) -> None:
         """
         Start the websocket subscription. This method returns immediately after
@@ -78,11 +84,21 @@ class StartRealtimeIngestionUseCase:
                 candle_doc["symbol"], candle_doc["interval"], candle_doc["open_time"],
             )
 
-            # Trigger indicators (optional)
-            if self._compute_indicators is not None:
-                await self._compute_indicators.execute_for_symbol_interval(
-                    symbol=self._symbol,
-                    interval=self._interval,
-                )
+            # Trigger indicators and evaluation for each ACTIVE indicator set of this symbol
+            if self._compute_indicators is not None and self._indicator_set_repo and self._evaluate_uc:
+                active_sets = await self._indicator_set_repo.get_active_by_symbol(self._symbol)
+                for indset in active_sets:
+                    snapshot = await self._compute_indicators.execute_for_indicator_set(
+                        symbol=self._symbol,
+                        interval=self._interval,
+                        ema_fast=int(indset["ema_fast"]),
+                        ema_slow=int(indset["ema_slow"]),
+                        atr_window=int(indset["atr_window"]),
+                        indicator_set_id=indset.get("_id", indset["cfg_hash"]),
+                        cfg_hash=indset["cfg_hash"],
+                    )
+                    if snapshot:
+                        await self._evaluate_uc.execute_for_snapshot(indicator_set=indset, snapshot=snapshot)
+
         except Exception as exc:
             self._logger.exception("Failed to process closed kline: %s", exc)

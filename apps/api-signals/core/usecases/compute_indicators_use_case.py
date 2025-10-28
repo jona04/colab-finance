@@ -17,62 +17,72 @@ class ComputeIndicatorsUseCase:
         candle_repository: CandleRepository,
         indicator_repository: IndicatorRepository,
         indicator_service: IndicatorCalculationService,
-        ema_fast: int,
-        ema_slow: int,
-        atr_window: int,
         logger: logging.Logger | None = None,
     ):
         """
         :param candle_repository: Candle repository.
         :param indicator_repository: Indicator repository.
         :param indicator_service: Indicator calculation helper.
-        :param ema_fast: EMA fast period (bars).
-        :param ema_slow: EMA slow period (bars).
-        :param atr_window: ATR window (bars).
         :param logger: Optional logger.
         """
         self._candle_repo = candle_repository
         self._indicator_repo = indicator_repository
         self._svc = indicator_service
-        self._ema_fast = int(ema_fast)
-        self._ema_slow = int(ema_slow)
-        self._atr_window = int(atr_window)
         self._logger = logger or logging.getLogger(self.__class__.__name__)
 
-    @property
-    def required_bars(self) -> int:
+    @staticmethod
+    def required_bars_for(ema_slow: int, atr_window: int) -> int:
         """
-        Return the number of bars required to compute all indicators reliably.
+        Return the number of bars required to compute all indicators reliably
+        for the provided indicator set.
         """
-        return max(self._ema_slow, self._atr_window)
+        return max(int(ema_slow), int(atr_window))
 
-    async def execute_for_symbol_interval(self, symbol: str, interval: str) -> Optional[dict]:
+    async def execute_for_indicator_set(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        ema_fast: int,
+        ema_slow: int,
+        atr_window: int,
+        indicator_set_id: str,
+        cfg_hash: str,
+    ) -> Optional[dict]:
         """
-        Load the last required candles, compute indicators for the last bar
-        and persist the snapshot. If not enough data, do nothing.
+        Load the last required candles (based on ema_slow/atr_window), compute indicators
+        for the last bar and persist the snapshot keyed by (symbol, ts, cfg_hash).
 
         :param symbol: Trading symbol, e.g. 'ETHUSDT'.
         :param interval: Interval string, e.g. '1m'.
-        :return: The snapshot dict persisted, or None if skipped.
+        :param ema_fast: EMA fast period (bars).
+        :param ema_slow: EMA slow period (bars).
+        :param atr_window: ATR window (bars).
+        :param indicator_set_id: Logical id of the set (can be cfg_hash if you prefer).
+        :param cfg_hash: Hash representing (symbol, ema_fast, ema_slow, atr_window).
+        :return: The snapshot dict persisted, or None if not enough data.
         """
-        candles = await self._candle_repo.get_last_n_closed(symbol, interval, self.required_bars)
+        need = self.required_bars_for(ema_slow, atr_window)
+        candles = await self._candle_repo.get_last_n_closed(symbol, interval, need)
+
         snapshot = self._svc.compute_snapshot_for_last(
             candles,
-            ema_fast=self._ema_fast,
-            ema_slow=self._ema_slow,
-            atr_window=self._atr_window,
+            ema_fast=int(ema_fast),
+            ema_slow=int(ema_slow),
+            atr_window=int(atr_window),
         )
         if snapshot is None:
-            self._logger.debug(
-                "Not enough candles for indicators: have=%s need=%s",
-                len(candles), self.required_bars
-            )
+            self._logger.debug("Not enough candles for indicators: have=%s need=%s", len(candles), need)
             return None
+
+        # Enrich with indicator set identifiers (used by indicators_1m unique index)
+        snapshot["indicator_set_id"] = indicator_set_id
+        snapshot["cfg_hash"] = cfg_hash
 
         await self._indicator_repo.upsert_snapshot(snapshot)
         self._logger.debug(
-            "Indicator snapshot upserted: symbol=%s ts=%s ema_fast=%.6f ema_slow=%.6f atr_pct=%.6f",
-            snapshot["symbol"], snapshot["ts"],
+            "Indicator snapshot upserted: symbol=%s ts=%s set=%s ema_f=%s ema_s=%s atr=%.6f",
+            snapshot["symbol"], snapshot["ts"], cfg_hash,
             snapshot["ema_fast"], snapshot["ema_slow"], snapshot["atr_pct"]
         )
         return snapshot
