@@ -35,79 +35,93 @@ class EvaluateActiveStrategiesUseCase:
         return "up" if ema_fast_val > ema_slow_val else "down"
 
     @staticmethod
-    def _gate_breakout(P: float, Pa: float, Pb: float, eps: float) -> Optional[str]:
-        if P > Pb * (1 + eps):
-            return "cross_max"
-        if P < Pa * (1 - eps):
-            return "cross_min"
-        return None
-
-    @staticmethod
     def _gate_high_vol(atr_pct: Optional[float], threshold: Optional[float]) -> bool:
         return (atr_pct is not None) and (threshold is not None) and (atr_pct > threshold)
 
+    # === Helpers de banda (clamps e largura total) ===
     @staticmethod
-    def _apply_major_cap_and_floor(pct_below: float, pct_above: float,
-                                   max_major_side_pct: Optional[float],
-                                   min_major_side_pct_high_vol: Optional[float],
-                                   high_vol: bool) -> Tuple[float, float]:
-        major = max(pct_below, pct_above)
-        minor = min(pct_below, pct_above)
-        # cap
-        if max_major_side_pct is not None and major > max_major_side_pct:
-            scale = max_major_side_pct / major
-            major *= scale; minor *= scale
-        # floor in high vol
-        if high_vol and min_major_side_pct_high_vol is not None and major < min_major_side_pct_high_vol:
-            scale = (min_major_side_pct_high_vol / major) if major > 0 else 1.0
-            major *= scale; minor *= scale
-        # restore orientation
-        if pct_below >= pct_above:
-            pct_below, pct_above = major, minor
-        else:
-            pct_below, pct_above = minor, major
-        return float(pct_below), float(pct_above)
-
-    def _pick_band_for_trend(self, P: float, trend: str, params: Dict, atr_pct_now: Optional[float],
-                             force_high_vol: Optional[bool] = None,
-                             cap_override: Optional[float] = None) -> Tuple[float, float, str, str, bool]:
-        # base skew
-        if trend == "down":
-            majority = "token1"; mode = "trend_down"
-            pct_below = float(params.get("skew_low_pct", 0.09))
-            pct_above = float(params.get("skew_high_pct", 0.01))
-        else:
-            majority = "token2"; mode = "trend_up"
-            pct_below = float(params.get("skew_high_pct", 0.01))
-            pct_above = float(params.get("skew_low_pct", 0.09))
-
-        # vol regime
-        if force_high_vol is not None:
-            high_vol = bool(force_high_vol)
-        else:
-            th = params.get("vol_high_threshold_pct")
-            high_vol = (atr_pct_now is not None and th is not None and atr_pct_now > th)
-
-        pct_below, pct_above = self._apply_major_cap_and_floor(
-            pct_below, pct_above,
-            max_major_side_pct=cap_override if cap_override is not None else params.get("max_major_side_pct"),
-            min_major_side_pct_high_vol=params.get("vol_high_min_major_side_pct"),
-            high_vol=high_vol,
-        )
-        Pa = max(1e-12, P * (1.0 - pct_below))
-        Pb = P * (1.0 + pct_above)
-        mid_pad = 1e-12 * P
+    def _ensure_valid_band(Pa: float, Pb: float, P: float) -> Tuple[float, float]:
+        EPS_POS = 1e-12
+        Pa = max(EPS_POS, float(Pa))
+        Pb = max(Pa + EPS_POS, float(Pb))
+        mid_pad = EPS_POS * max(1.0, float(P))
         Pa = min(P - mid_pad, Pa)
         Pb = max(P + mid_pad, Pb)
+        if not (Pa < Pb):
+            Pa = P - mid_pad
+            Pb = P + mid_pad
+        return Pa, Pb
+
+    @staticmethod
+    def _scale_to_total_width(pct_below_base: float, pct_above_base: float, total_width_pct: float) -> Tuple[float, float]:
+        base_sum = pct_below_base + pct_above_base
+        if base_sum <= 0:
+            half = max(1e-12, total_width_pct / 2.0)
+            return half, half
+        scale = total_width_pct / base_sum
+        return pct_below_base * scale, pct_above_base * scale
+
+    def _pick_band_for_trend_totalwidth(
+        self,
+        P: float,
+        trend: str,
+        params: Dict,
+        atr_pct_now: Optional[float],
+        total_width_override: Optional[float] = None,
+        pool_type: Optional[str] = None,
+    ) -> Tuple[float, float, str, str, bool]:
+        """
+        Gera (Pa,Pb) assumindo que 'max_major_side_pct' e afins são LARGURA TOTAL do range.
+        """
+        # skew base
+        if trend == "down":
+            majority = "token1"; mode = "trend_down"
+            pct_below_base = float(params.get("skew_low_pct", 0.09))   # largo abaixo
+            pct_above_base = float(params.get("skew_high_pct", 0.01))  # curto acima
+        else:
+            majority = "token2"; mode = "trend_up"
+            pct_below_base = float(params.get("skew_high_pct", 0.01))  # curto abaixo
+            pct_above_base = float(params.get("skew_low_pct", 0.09))   # largo acima
+
+        # regime de vol (flag informativa)
+        vol_th = params.get("vol_high_threshold_pct")
+        high_vol = (atr_pct_now is not None and vol_th is not None and atr_pct_now > float(vol_th))
+
+        # total width
+        if total_width_override is not None:
+            total_width_pct = float(total_width_override)
+        elif pool_type == "high_vol":
+            total_width_pct = float(params.get("high_vol_max_major_side_pct", 0.10))
+        elif pool_type == "standard" or pool_type is None:
+            total_width_pct = float(params.get("standard_max_major_side_pct", 0.05))
+        elif params.get("max_major_side_pct") is not None:
+            total_width_pct = float(params["max_major_side_pct"])
+        else:
+            total_width_pct = pct_below_base + pct_above_base
+
+        total_width_pct = max(float(total_width_pct), 2e-6)
+        pct_below, pct_above = self._scale_to_total_width(pct_below_base, pct_above_base, total_width_pct)
+
+        Pa = P * (1.0 - pct_below)
+        Pb = P * (1.0 + pct_above)
+        Pa, Pb = self._ensure_valid_band(Pa, Pb, P)
         return Pa, Pb, mode, majority, high_vol
 
-    # ===== execute =====
+    # === Breakout com confirmação por streak no episódio ===
+    @staticmethod
+    def _update_breakout_streaks(P: float, Pa: float, Pb: float, eps: float,
+                                 out_above_streak: int, out_below_streak: int) -> Tuple[int, int]:
+        above = P > Pb * (1.0 + eps)
+        below = P < Pa * (1.0 - eps)
+        if above:
+            return out_above_streak + 1, 0
+        if below:
+            return 0, out_below_streak + 1
+        # voltou para dentro
+        return 0, 0
 
+    # ===== execute =====
     async def execute_for_snapshot(self, indicator_set: Dict, snapshot: Dict) -> None:
-        """
-        Evaluate every ACTIVE strategy that references the given indicator_set with the provided snapshot.
-        Potentially closes/opens episodes and emits reconciliation signals into 'signals'.
-        """
         symbol = snapshot["symbol"]
         P = float(snapshot["close"])
         ema_f = float(snapshot["ema_fast"])
@@ -116,7 +130,6 @@ class EvaluateActiveStrategiesUseCase:
         ts = int(snapshot["ts"])
 
         strategies = await self._strategy_repo.get_active_by_indicator_set(indicator_set_id=indicator_set["cfg_hash"])
-        # NOTE: If you prefer ObjectId, replace cfg_hash by real _id in both strategy and indicator_set.
         if not strategies:
             return
 
@@ -124,13 +137,16 @@ class EvaluateActiveStrategiesUseCase:
             params = strat["params"]
             eps = float(params.get("eps", 1e-6))
             cooloff = int(params.get("cooloff_bars", 1))
+            breakout_confirm = int(params.get("breakout_confirm_bars", 1))
+            inrange_mode = params.get("inrange_resize_mode", "skew_swap")
 
-            # 1) load current episode or open the first one if none
-            current = await self._episode_repo.get_open_by_strategy(strat_id := strat["name"])
+            # 1) episódio atual
+            strat_id = strat["name"]
+            current = await self._episode_repo.get_open_by_strategy(strat_id)
             if current is None:
-                # first open centered band using initial range around price
-                Pa, Pb, mode, majority, _ = self._pick_band_for_trend(
-                    P, self._trend_at(ema_f, ema_s), params, atr_pct
+                # abre primeira banda centrada pela tendência
+                Pa, Pb, mode, majority, _ = self._pick_band_for_trend_totalwidth(
+                    P, self._trend_at(ema_f, ema_s), params, atr_pct, total_width_override=params.get("standard_max_major_side_pct"), pool_type="standard"
                 )
                 new_ep = {
                     "_id": f"ep_{strat_id}_{ts}",
@@ -145,9 +161,10 @@ class EvaluateActiveStrategiesUseCase:
                     "Pa": Pa, "Pb": Pb,
                     "last_event_bar": 0,
                     "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
+                    "out_above_streak": 0,
+                    "out_below_streak": 0,
                 }
                 await self._episode_repo.open_new(new_ep)
-                # reconcile desired vs LP
                 signal = await self._reconciler.reconcile(strat_id, new_ep, symbol)
                 if signal:
                     await self._signal_repo.upsert_signal({
@@ -163,103 +180,149 @@ class EvaluateActiveStrategiesUseCase:
                     })
                 continue
 
-            # cooldown logic needs a bar index; we can approximate by counting from open_time
-            i_since_open = current.get("last_event_bar", 0) + 1
+            # defaults de campos antigos
+            Pa_cur = float(current.get("Pa"))
+            Pb_cur = float(current.get("Pb"))
+            i_since_open = int(current.get("last_event_bar", 0)) + 1
+            out_above_streak = int(current.get("out_above_streak", 0))
+            out_below_streak = int(current.get("out_below_streak", 0))
+            pool_type_cur = current.get("pool_type", "standard")
 
-            # 2) gates
-            trigger = None
+            trigger: Optional[str] = None
 
-            brk = self._gate_breakout(P, current["Pa"], current["Pb"], eps)
-            if brk and (i_since_open >= cooloff):
-                trigger = brk
+            # 2) atualiza streaks de breakout e verifica confirmação
+            out_above_streak, out_below_streak = self._update_breakout_streaks(
+                P, Pa_cur, Pb_cur, eps, out_above_streak, out_below_streak
+            )
+            # persiste os contadores mesmo sem evento
+            await self._episode_repo.update_partial(current["_id"], {
+                "out_above_streak": out_above_streak,
+                "out_below_streak": out_below_streak,
+                "last_event_bar": i_since_open
+            })
 
-            elif self._gate_high_vol(atr_pct, params.get("vol_high_threshold_pct")) and current.get("pool_type") != "high_vol":
-                trigger = "high_vol"
+            if (i_since_open >= cooloff) and (
+                out_above_streak >= breakout_confirm or out_below_streak >= breakout_confirm
+            ):
+                trigger = "cross_max" if out_above_streak >= breakout_confirm else "cross_min"
 
-            # tiers – from narrow to wide
-            elif current["Pa"] < P < current["Pb"]:
-                tiers = list(params.get("tiers", []))
-                tiers.sort(key=lambda t: t["atr_pct_threshold"])  # ensure ordering
-                # update streaks and pick the narrowest allowed
+            # 3) gate high vol (evita reabrir se já high_vol)
+            if not trigger and (i_since_open >= cooloff):
+                vol_th = params.get("vol_high_threshold_pct")
+                if (atr_pct is not None and vol_th is not None and atr_pct > float(vol_th)) and pool_type_cur != "high_vol":
+                    trigger = "high_vol"
+
+            # 4) tiers — apenas se in-range e sem trigger ainda
+            if not trigger and (Pa_cur < P < Pb_cur) and (i_since_open >= cooloff):
+                tiers: List[Dict] = list(params.get("tiers", []))
+                tiers.sort(key=lambda t: t["atr_pct_threshold"])
                 streaks = current.get("atr_streak", {})
-                chosen_tier = None
-                for tier in reversed(tiers):
-                    name = tier["name"]
-                    allowed_from = tier.get("allowed_from", [])
-                    if current.get("pool_type") not in allowed_from and current.get("pool_type") != name:
-                        continue
-                    # update streak counter
-                    if atr_pct <= float(tier["atr_pct_threshold"]):
-                        streaks[name] = int(streaks.get(name, 0)) + 1
-                    else:
-                        streaks[name] = 0
-                    if streaks[name] >= int(tier["bars_required"]):
-                        chosen_tier = tier
+                chosen = None
+                for tier in tiers:
+                    if pool_type_cur == tier["name"]:
                         break
-                if chosen_tier and (i_since_open >= cooloff):
-                    self._logger.info(f"Tier : {chosen_tier}")
-                    trigger = f"tighten_{chosen_tier['name']}"
-                # persist updated streaks even if no trigger
-                await self._episode_repo.update_partial(current["_id"], {"atr_streak": streaks, "last_event_bar": i_since_open})
+                    if pool_type_cur not in tier.get("allowed_from", []) and pool_type_cur != tier["name"]:
+                        continue
+                    # atualiza streak
+                    thr = float(tier["atr_pct_threshold"])
+                    name = tier["name"]
+                    
+                    streaks[name] = int(streaks.get(name, 0)) + 1 if (atr_pct is not None and atr_pct <= thr) else 0
+                    if streaks[name] >= int(tier["bars_required"]):
+                        chosen = tier
+                        break
+                if chosen:
+                    trigger = f"tighten_{chosen['name']}"
+                # persiste streaks (mesmo sem trigger)
+                await self._episode_repo.update_partial(current["_id"], {"atr_streak": streaks})
 
-            # 3) if no trigger, nothing to do this bar
+            # 5) sem gatilho → segue
             if not trigger:
                 continue
 
-            # 4) close current and open next band based on trigger
+            # 6) fechar episódio atual
             await self._episode_repo.close_episode(
-                current["_id"], {
+                current["_id"],
+                {
                     "close_time": ts,
                     "close_time_iso": snapshot.get("created_at_iso", None),
                     "close_reason": trigger,
                     "close_price": P,
-                }
+                },
             )
 
             trend_now = self._trend_at(ema_f, ema_s)
 
-            def _open_with_cap(pool_type: str, cap_override: Optional[float]):
-                Pa, Pb, mode, majority, _ = self._pick_band_for_trend(
-                    P, trend_now, params, atr_pct, cap_override=cap_override
+            # helper para abrir com "total width"; aplica preserve quando aplicável
+            def _open_with_width(next_pool_type: str, total_width_override: Optional[float]):
+                # decide total width alvo
+                total_width_pct = (
+                    float(total_width_override) if total_width_override is not None
+                    else (float(params.get("high_vol_max_major_side_pct")) if next_pool_type == "high_vol"
+                          else float(params.get("standard_max_major_side_pct")))
                 )
+                use_preserve = False
+                in_range_now = (Pa_cur < P < Pb_cur)
+                if (
+                    inrange_mode == "preserve"
+                    and in_range_now
+                    and total_width_pct <= max(0.0, (P - Pa_cur) / P) + max(0.0, (Pb_cur - P) / P) + 1e-14
+                    and trigger not in ("cross_min", "cross_max")
+                ):
+                    use_preserve = True
+
+                if use_preserve:
+                    # redimensiona mantendo proporções atuais (sem swap)
+                    pct_below_base = max(0.0, (P - Pa_cur) / P)
+                    pct_above_base = max(0.0, (Pb_cur - P) / P)
+                    pct_below, pct_above = self._scale_to_total_width(pct_below_base, pct_above_base, total_width_pct)
+                    Pa_new = P * (1.0 - pct_below)
+                    Pb_new = P * (1.0 + pct_above)
+                    Pa_new, Pb_new = self._ensure_valid_band(Pa_new, Pb_new, P)
+                    mode_now = next_pool_type if next_pool_type in ("standard", "high_vol") else "trend_keep"
+                    majority_now = current.get("majority_on_open")  # mantém majority
+                else:
+                    Pa_new, Pb_new, mode_now, majority_now, _ = self._pick_band_for_trend_totalwidth(
+                        P, trend_now, params, atr_pct, total_width_override=total_width_pct, pool_type=next_pool_type
+                    )
                 return {
                     "_id": f"ep_{strat_id}_{ts}",
                     "strategy_id": strat_id,
                     "symbol": symbol,
-                    "pool_type": pool_type,
-                    "mode_on_open": mode,
-                    "majority_on_open": majority,
+                    "pool_type": next_pool_type,
+                    "mode_on_open": mode_now,
+                    "majority_on_open": majority_now,
                     "open_time": ts,
                     "open_time_iso": snapshot.get("created_at_iso", None),
                     "open_price": P,
-                    "Pa": Pa, "Pb": Pb,
+                    "Pa": Pa_new, "Pb": Pb_new,
                     "last_event_bar": 0,
                     "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
+                    "out_above_streak": 0,
+                    "out_below_streak": 0,
                 }
 
+            # 7) escolher próxima pool
             new_ep = None
             if trigger in ("cross_min", "cross_max"):
-                # try tiers (narrowest allowed), else standard
                 tiers = params.get("tiers", [])
                 if tiers:
                     tiers_sorted = sorted(tiers, key=lambda t: t["atr_pct_threshold"])
-                    for tier in reversed(tiers_sorted):  # narrowest first
-                        cap = float(tier["max_major_side_pct"])
-                        new_ep = _open_with_cap(tier["name"], cap_override=cap)
+                    for tier in reversed(tiers_sorted):  # mais estreito primeiro
+                        new_ep = _open_with_width(tier["name"], float(tier["max_major_side_pct"]))
                         break
                 if new_ep is None:
-                    new_ep = _open_with_cap("standard", cap_override=params.get("standard_max_major_side_pct"))
+                    new_ep = _open_with_width("standard", float(params.get("standard_max_major_side_pct", 0.05)))
             elif trigger == "high_vol":
-                new_ep = _open_with_cap("high_vol", cap_override=params.get("high_vol_max_major_side_pct"))
+                new_ep = _open_with_width("high_vol", float(params.get("high_vol_max_major_side_pct", 0.10)))
             elif trigger.startswith("tighten_"):
                 tier_name = trigger.split("_", 1)[1]
                 tier = next((t for t in params.get("tiers", []) if t["name"] == tier_name), None)
-                cap = float(tier["max_major_side_pct"]) if tier else params.get("standard_max_major_side_pct")
-                new_ep = _open_with_cap(tier_name if tier else "standard", cap_override=cap)
+                width = float(tier["max_major_side_pct"]) if tier else float(params.get("standard_max_major_side_pct", 0.05))
+                new_ep = _open_with_width(tier_name if tier else "standard", width)
 
             if new_ep:
                 await self._episode_repo.open_new(new_ep)
-                # reconcile with LP and emit signal if needed
                 signal = await self._reconciler.reconcile(strat_id, new_ep, symbol)
                 if signal:
                     await self._signal_repo.upsert_signal({

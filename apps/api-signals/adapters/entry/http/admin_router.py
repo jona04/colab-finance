@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -91,7 +91,6 @@ class StrategyParamsDTO(BaseModel):
     # global caps/floors
     max_major_side_pct: Optional[float] = Field(None, ge=0.0)
     vol_high_threshold_pct: Optional[float] = Field(0.02, ge=0.0)
-    vol_high_min_major_side_pct: Optional[float] = Field(0.05, ge=0.0)
 
     # pool caps
     high_vol_max_major_side_pct: float = Field(0.10, ge=0.0)
@@ -104,6 +103,9 @@ class StrategyParamsDTO(BaseModel):
     eps: float = Field(1e-6, ge=0.0)
     cooloff_bars: int = Field(1, ge=0)
 
+    inrange_resize_mode: Literal["preserve", "skew_swap"] = Field("skew_swap")
+    breakout_confirm_bars: int = Field(1, ge=1)
+    
 class StrategyCreateDTO(BaseModel):
     name: str = Field(..., examples=["eth_range_v1"])
     symbol: str = Field(..., examples=["ETHUSDT"])

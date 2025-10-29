@@ -35,6 +35,8 @@ class StrategyEpisodeRepositoryMongoDB(StrategyEpisodeRepository):
             "created_at": now_ms,
             "created_at_iso": now_iso,
             "updated_at": now_ms,
+            "out_above_streak": doc.get("out_above_streak", 0),
+            "out_below_streak": doc.get("out_below_streak", 0),
         }
         await self._col.insert_one(payload)
         return payload
