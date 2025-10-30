@@ -323,7 +323,7 @@ class EvaluateActiveStrategiesUseCase:
                         P, trend_now, params, atr_pct, total_width_override=total_width_pct, pool_type=next_pool_type
                     )
                     
-                if majority == "token1":
+                if majority_now == "token1":
                     major_pct = pct_below*10
                     minor_pct = pct_above*10
                     

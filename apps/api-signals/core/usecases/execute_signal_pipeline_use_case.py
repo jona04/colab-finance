@@ -158,7 +158,6 @@ class ExecuteSignalPipelineUseCase:
                                     if res is None:
                                         raise RuntimeError("swap_failed")
 
-                                # se delta_usd <= 0 já estamos gordos o suficiente em WETH, não faz swap
                                 success = True
                             
                             else:
@@ -193,7 +192,7 @@ class ExecuteSignalPipelineUseCase:
                                         alias=alias,
                                         token_in=token_in_addr,
                                         token_out=token_out_addr,
-                                        amount_in_usd=delta_usd,
+                                        amount_in_usd=delta_usd*-1,
                                     )
                                     if res is None:
                                         raise RuntimeError("swap_failed")
