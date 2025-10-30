@@ -73,16 +73,37 @@ class EvaluateActiveStrategiesUseCase:
         """
         Gera (Pa,Pb) assumindo que 'max_major_side_pct' e afins são LARGURA TOTAL do range.
         """
+        tiers: List[Dict] = list(params.get("tiers", []))
+        last_tier = tiers[-1].get("name")
         # skew base
-        if trend == "down":
-            majority = "token1"; mode = "trend_down"
-            pct_below_base = float(params.get("skew_low_pct", 0.09))   # largo abaixo
-            pct_above_base = float(params.get("skew_high_pct", 0.01))  # curto acima
+        if pool_type == "high_vol":
+            if trend == "down":
+                majority = "token1"; mode = "trend_down"
+                pct_below_base = float(0.09)   # largo abaixo
+                pct_above_base = float(0.01)  # curto acima
+            else:
+                majority = "token2"; mode = "trend_up"
+                pct_below_base = float(0.01)  # curto abaixo
+                pct_above_base = float(0.09)   # largo acima
+        elif pool_type == last_tier:
+            if trend == "down":
+                majority = "token1"; mode = "trend_down"
+                pct_below_base = float(0.05)   # largo abaixo
+                pct_above_base = float(0.05)  # curto acima
+            else:
+                majority = "token2"; mode = "trend_up"
+                pct_below_base = float(0.05)  # curto abaixo
+                pct_above_base = float(0.05)   # largo acima
         else:
-            majority = "token2"; mode = "trend_up"
-            pct_below_base = float(params.get("skew_high_pct", 0.01))  # curto abaixo
-            pct_above_base = float(params.get("skew_low_pct", 0.09))   # largo acima
-
+            if trend == "down":
+                majority = "token1"; mode = "trend_down"
+                pct_below_base = float(params.get("skew_low_pct", 0.075))   # largo abaixo
+                pct_above_base = float(params.get("skew_high_pct", 0.025))  # curto acima
+            else:
+                majority = "token2"; mode = "trend_up"
+                pct_below_base = float(params.get("skew_high_pct", 0.025))  # curto abaixo
+                pct_above_base = float(params.get("skew_low_pct", 0.075))   # largo acima
+                
         # regime de vol (flag informativa)
         vol_th = params.get("vol_high_threshold_pct")
         high_vol = (atr_pct_now is not None and vol_th is not None and atr_pct_now > float(vol_th))
@@ -91,7 +112,7 @@ class EvaluateActiveStrategiesUseCase:
         if total_width_override is not None:
             total_width_pct = float(total_width_override)
         elif pool_type == "high_vol":
-            total_width_pct = float(params.get("high_vol_max_major_side_pct", 0.10))
+            total_width_pct = float(params.get("high_vol_max_major_side_pct", 2.0))
         elif pool_type == "standard" or pool_type is None:
             total_width_pct = float(params.get("standard_max_major_side_pct", 0.05))
         elif params.get("max_major_side_pct") is not None:
@@ -163,6 +184,10 @@ class EvaluateActiveStrategiesUseCase:
                     "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
                     "out_above_streak": 0,
                     "out_below_streak": 0,
+                    "dex": params.get("dex"),
+                    "alias": params.get("alias"),
+                    "token0_address": params.get("token0_address"),
+                    "token1_address": params.get("token1_address"),
                 }
                 await self._episode_repo.open_new(new_ep)
                 signal = await self._reconciler.reconcile(strat_id, new_ep, symbol)
@@ -300,6 +325,10 @@ class EvaluateActiveStrategiesUseCase:
                     "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
                     "out_above_streak": 0,
                     "out_below_streak": 0,
+                    "dex": params.get("dex"),
+                    "alias": params.get("alias"),
+                    "token0_address": params.get("token0_address"),
+                    "token1_address": params.get("token1_address"),
                 }
 
             # 7) escolher próxima pool

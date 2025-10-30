@@ -106,6 +106,12 @@ class StrategyParamsDTO(BaseModel):
     inrange_resize_mode: Literal["preserve", "skew_swap"] = Field("skew_swap")
     breakout_confirm_bars: int = Field(1, ge=1)
     
+    # ===== integração vault on-chain =====
+    dex: Optional[str] = Field(None, description="ex: 'aerodrome', 'uniswap'")
+    alias: Optional[str] = Field(None, description="vault alias usado nas rotas /vaults/{dex}/{alias}")
+    token0_address: Optional[str] = Field(None, description="address token0 do par/vault")
+    token1_address: Optional[str] = Field(None, description="address token1 do par/vault")
+    
 class StrategyCreateDTO(BaseModel):
     name: str = Field(..., examples=["eth_range_v1"])
     symbol: str = Field(..., examples=["ETHUSDT"])
