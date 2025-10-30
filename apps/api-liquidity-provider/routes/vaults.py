@@ -1,6 +1,6 @@
 from decimal import Decimal
 import json
-import os
+import time
 from pathlib import Path
 from datetime import datetime
 import token
@@ -18,7 +18,7 @@ from ..domain.models import (
 )
 from ..services import state_repo, vault_repo
 from ..services.tx_service import TxService
-from ..services.chain_reader import USD_SYMBOLS, _value_usd, compute_status, sqrtPriceX96_to_price_t1_per_t0
+from ..services.chain_reader import USD_SYMBOLS, _value_usd, compute_status, price_to_tick, sqrtPriceX96_to_price_t1_per_t0
 from ..adapters.uniswap_v3 import UniswapV3Adapter
 from ..adapters.aerodrome import AerodromeAdapter
 from ..domain.models import StakeRequest, UnstakeRequest, ClaimRewardsRequest
@@ -168,27 +168,102 @@ def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
 
     state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    
+    cons = ad.vault_constraints()
     meta = ad.pool_meta()
-    # convert human caps -> raw if provided
+    dec0 = int(meta["dec0"])
+    dec1 = int(meta["dec1"])
+    spacing = int(meta["spacing"])
+    
+    from_addr = TxService(v.get("rpc_url")).sender_address()
+    if cons.get("owner") and from_addr and cons["owner"].lower() != from_addr.lower():
+        raise HTTPException(
+            400,
+            f"Sender is not vault owner. owner={cons['owner']} sender={from_addr}"
+        )
+    
+    if cons.get("twapOk") is False:
+        raise HTTPException(400, "TWAP guard not satisfied (twapOk=false).")
+    if cons.get("minCooldown") and cons.get("lastRebalance"):
+        if time.time() < cons["lastRebalance"] + cons["minCooldown"]:
+            raise HTTPException(400, "Cooldown not finished yet (minCooldown).")
+        
+   #
+    # ---- resolver LOWER / UPPER em ticks
+    #
+    lower_tick = req.lower_tick
+    upper_tick = req.upper_tick
+
+    if lower_tick is None or upper_tick is None:
+        # tentar via preço
+        if req.lower_price is None or req.upper_price is None:
+            raise HTTPException(
+                400,
+                "You must provide either (lower_tick and upper_tick) OR (lower_price and upper_price)."
+            )
+        lower_tick = price_to_tick(float(req.lower_price), dec0, dec1)
+        upper_tick = price_to_tick(float(req.upper_price), dec0, dec1)
+
+    # garantir ordem (lower < upper)
+    if lower_tick > upper_tick:
+        # se o user mandou invertido, a gente troca
+        tmp = lower_tick
+        lower_tick = upper_tick
+        upper_tick = tmp
+
+    # alinhar para múltiplo de spacing
+    if lower_tick % spacing != 0:
+        # arredonda pro múltiplo mais próximo
+        lower_tick = int(round(lower_tick / spacing) * spacing)
+    if upper_tick % spacing != 0:
+        upper_tick = int(round(upper_tick / spacing) * spacing)
+
+    # width sanity (igual /open faz)
+    width = abs(int(upper_tick) - int(lower_tick))
+    if cons.get("minWidth") and width < cons["minWidth"]:
+        raise HTTPException(
+            400,
+            f"Width too small: {width} < minWidth={cons['minWidth']}."
+        )
+    if cons.get("maxWidth") and width > cons["maxWidth"]:
+        raise HTTPException(
+            400,
+            f"Width too large: {width} > maxWidth={cons['maxWidth']}."
+        )
+
+    # ---- converter caps humanos -> raw
     cap0_raw = cap1_raw = None
     if req.cap0 is not None:
-        cap0_raw = int(float(req.cap0) * (10 ** int(meta["dec0"])))
+        cap0_raw = int(float(req.cap0) * (10 ** dec0))
     if req.cap1 is not None:
-        cap1_raw = int(float(req.cap1) * (10 ** int(meta["dec1"])))
+        cap1_raw = int(float(req.cap1) * (10 ** dec1))
 
-    fn = ad.fn_rebalance_caps(req.lower, req.upper, cap0_raw, cap1_raw)
-    txh = TxService(v.get("rpc_url")).send(fn)
-    
+    # ---- montar tx rebalanceWithCaps(lower_tick, upper_tick, cap0_raw, cap1_raw)
+    fn = ad.fn_rebalance_caps(lower_tick, upper_tick, cap0_raw, cap1_raw)
+    txs = TxService(v.get("rpc_url"))
+    txh = txs.send(fn)
+
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "rebalance_caps",
-        "lower": req.lower,
-        "upper": req.upper,
+        "lower_tick": lower_tick,
+        "upper_tick": upper_tick,
+        "lower_price": float(req.lower_price) if req.lower_price is not None else None,
+        "upper_price": float(req.upper_price) if req.upper_price is not None else None,
         "cap0": req.cap0,
         "cap1": req.cap1,
         "tx": txh
     })
-    return {"tx": txh}
+
+    return {
+        "tx": txh,
+        "lower_tick": lower_tick,
+        "upper_tick": upper_tick,
+        "lower_price": float(req.lower_price) if req.lower_price is not None else None,
+        "upper_price": float(req.upper_price) if req.upper_price is not None else None,
+        "spacing": spacing,
+        "width_ticks": width,
+    }
 
 @router.post("/vaults/{dex}/{alias}/withdraw")
 def withdraw(dex: str, alias: str, req: WithdrawRequest):

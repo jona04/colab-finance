@@ -1,5 +1,5 @@
 {
-  "active": "vault5",
+  "active": "api1",
   "vaults": {
     "vault1": {
       "address": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
@@ -44,6 +44,15 @@
       "nfpm": "0x827922686190790b37229fd06084350E74485b72",
       "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
       "rpc_url": "http://127.0.0.1:8545",
+      "version": "v2"
+    },
+    "api1": {
+      "address": "0x9f1099c6708fb5913537725CD055453Aa97134A5",
+      "adapter": "0xa38a772E10DbAca535099f171cA4069eF3Ac1169",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+      "rpc_url": "https://base-mainnet.infura.io/v3/079d35a3c196469191c9accc1d68d25b",
       "version": "v2"
     }
   }

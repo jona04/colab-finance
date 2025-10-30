@@ -7,6 +7,7 @@ High-level read service that builds the "status" panel:
 This reuses the math/flow from your bot.observer.VaultObserver, simplified here.
 """
 
+import math
 from time import time
 from dataclasses import dataclass, asdict
 from decimal import Decimal, getcontext
@@ -44,10 +45,18 @@ def sqrtPriceX96_to_price_t1_per_t0(sqrtP: int, dec0: int, dec1: int) -> float:
     scale = Decimal(10) ** (dec0 - dec1)
     return float(px * scale)
 
-def _prices_from_tick(tick: int, dec0: int, dec1: int) -> Dict[str, float]:
+def prices_from_tick(tick: int, dec0: int, dec1: int) -> Dict[str, float]:
     p_t1_t0 = pow(1.0001, tick) * pow(10.0, dec0 - dec1)  # token1/token0
     p_t0_t1 = float("inf") if p_t1_t0 == 0 else (1.0 / p_t1_t0)
     return {"tick": tick, "p_t1_t0": p_t1_t0, "p_t0_t1": p_t0_t1}
+
+def price_to_tick(p_t1_t0: float, dec0: int, dec1: int) -> int:
+    if p_t1_t0 <= 0:
+        raise ValueError("price must be > 0")
+    ratio = p_t1_t0 / (10 ** (dec0 - dec1))
+    # arredonda pro tick inteiro mais próximo
+    tick_float = math.log(ratio, 1.0001)
+    return int(round(tick_float))
 
 def _is_usd_symbol(sym: str) -> bool:
     try:
@@ -183,9 +192,9 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
         save_state(dex, alias, st)
 
     prices_panel = PricesPanel(
-        current=PricesBlock(**_prices_from_tick(tick,  dec0, dec1)),
-        lower=  PricesBlock(**_prices_from_tick(lower, dec0, dec1)),
-        upper=  PricesBlock(**_prices_from_tick(upper, dec0, dec1)),
+        current=PricesBlock(**prices_from_tick(tick,  dec0, dec1)),
+        lower=  PricesBlock(**prices_from_tick(lower, dec0, dec1)),
+        upper=  PricesBlock(**prices_from_tick(upper, dec0, dec1)),
     )
 
     usd_panel = UsdPanelModel(

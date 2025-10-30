@@ -42,11 +42,17 @@ class OpenRequest(BaseModel):
     lower: int
     upper: int
 
+
 class RebalanceRequest(BaseModel):
-    alias: str
-    lower: int
-    upper: int
-    # when provided, service will convert human -> raw using pool decimals
+    # modo ticks (atual)
+    lower_tick: Optional[int] = None
+    upper_tick: Optional[int] = None
+
+    # modo preço direto (token1 per token0)
+    lower_price: Optional[float] = None  # alvo p_t1_t0 para bound inferior
+    upper_price: Optional[float] = None  # alvo p_t1_t0 para bound superior
+
+    # caps (human units)
     cap0: Optional[float] = None
     cap1: Optional[float] = None
 
