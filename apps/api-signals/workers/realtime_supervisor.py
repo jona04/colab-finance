@@ -1,10 +1,13 @@
 import asyncio
+import contextlib
 import logging
 import os
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from ..adapters.external.pipeline.liquidity_provider_client import LiquidityProviderClient
+from ..adapters.external.pipeline.pipeline_http_client import PipelineHttpClient
+from ..core.usecases.execute_signal_pipeline_use_case import ExecuteSignalPipelineUseCase
+
 from ..core.services.strategy_reconciler_service import StrategyReconcilerService
 from ..core.usecases.evaluate_active_strategies_use_case import EvaluateActiveStrategiesUseCase
 
@@ -23,17 +26,26 @@ from ..core.usecases.start_realtime_ingestion_use_case import StartRealtimeInges
 
 class RealtimeSupervisor:
     """
-    Bootstrapper for realtime ingestion: wires dependencies, ensures indexes,
-    starts the websocket, and keeps the task alive.
+    High-level supervisor for the api-signals process.
+
+    Responsibilities:
+    - Connect to Mongo, ensure indexes.
+    - Wire repositories, services, and use cases.
+    - Start realtime ingestion (Binance WS -> candles -> indicators -> strategies -> signals PENDING).
+    - Start background executor loop that drains PENDING signals and calls the vault pipeline
+      (collect -> withdraw -> swap -> rebalance).
     """
 
     def __init__(self):
         self._logger = logging.getLogger(self.__class__.__name__)
         self._mongo_client: AsyncIOMotorClient | None = None
         self._db = None
+
         self._ws_client: BinanceWebsocketClient | None = None
         self._ingestion_use_case: StartRealtimeIngestionUseCase | None = None
-        self._task: asyncio.Task | None = None
+
+        self._signal_executor_uc: ExecuteSignalPipelineUseCase | None = None
+        self._executor_task: asyncio.Task | None = None
 
     @property
     def db(self):
@@ -49,14 +61,15 @@ class RealtimeSupervisor:
         symbol = os.getenv("BINANCE_STREAM_SYMBOL", "ethusdt")
         interval = os.getenv("BINANCE_STREAM_INTERVAL", "1m")
 
-                # Mongo
+        # Mongo
         self._mongo_client = AsyncIOMotorClient(mongodb_uri)
         self._db = self._mongo_client[mongodb_db_name]
 
-        # Repositories
+        # --- Core repos for candles / indicators
         candle_repo = CandleRepositoryMongoDB(self._db)
         offset_repo = ProcessingOffsetRepositoryMongoDB(self._db)
         indicator_repo = IndicatorRepositoryMongoDB(self._db)
+
         await candle_repo.ensure_indexes()
         await offset_repo.ensure_indexes()
         await indicator_repo.ensure_indexes()
@@ -83,10 +96,14 @@ class RealtimeSupervisor:
         await episode_repo.ensure_indexes()
         await signal_repo.ensure_indexes()
 
-        lp_base_url = os.getenv("LP_BASE_URL", "http://localhost:8000")
-        lp_client = LiquidityProviderClient(lp_base_url)
-        reconciler = StrategyReconcilerService(lp_client)
+        # pipeline/vault HTTP client (our LP bridge)
+        pipeline_base_url = os.getenv("LP_BASE_URL", "http://localhost:8000")
+        pipeline_http = PipelineHttpClient(pipeline_base_url)
 
+        # Reconciler: turns desired band -> ordered steps [COLLECT, WITHDRAW, SWAP, REBALANCE]
+        reconciler = StrategyReconcilerService(pipeline_http)
+
+        # EvaluateActiveStrategiesUseCase: called whenever we compute a fresh indicator snapshot
         evaluate_uc = EvaluateActiveStrategiesUseCase(
             strategy_repo=strategy_repo,
             episode_repo=episode_repo,
@@ -94,7 +111,7 @@ class RealtimeSupervisor:
             reconciling_service=reconciler,
         )
 
-        # Ingestion + per-set compute + evaluation
+        # Realtime ingestion orchestration (candles -> indicators -> evaluate strategies)
         self._ingestion_use_case = StartRealtimeIngestionUseCase(
             symbol=symbol,
             interval=interval,
@@ -106,22 +123,45 @@ class RealtimeSupervisor:
             evaluate_use_case=evaluate_uc,
         )
 
+        # Signal executor: drains PENDING and hits the pipeline HTTP in loop
+        self._signal_executor_uc = ExecuteSignalPipelineUseCase(
+            signal_repo=signal_repo,
+            lp_client=pipeline_http,
+        )
+
+        async def _executor_loop():
+            """
+            Forever-loop for executing pending signals. This runs in the background.
+            """
+            while True:
+                try:
+                    await self._signal_executor_uc.execute_once()
+                except Exception as exc:
+                    self._logger.exception("signal executor loop error: %s", exc)
+                await asyncio.sleep(5)
+
+        # spawn executor loop task
+        self._executor_task = asyncio.create_task(_executor_loop())
+
+        # finally, start ingestion (this call sets up WS consuming etc.)
         await self._ingestion_use_case.execute()
         self._logger.info("Realtime ingestion started for %s@%s", symbol, interval)
 
-    async def _heartbeat(self):
-        """
-        Lightweight heartbeat to keep the supervisor task alive and log periodically.
-        """
-        while True:
-            await asyncio.sleep(60)
-            self._logger.debug("RealtimeSupervisor heartbeat OK.")
 
     async def stop(self):
         """
         Gracefully stop resources.
         """
+        # stop background executor loop
+        if self._executor_task:
+            self._executor_task.cancel()
+            with contextlib.suppress(Exception):
+                await self._executor_task
+
+        # close WS
         if self._ws_client:
             await self._ws_client.close()
+
+        # close Mongo
         if self._mongo_client:
             self._mongo_client.close()

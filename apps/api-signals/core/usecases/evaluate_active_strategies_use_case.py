@@ -69,7 +69,7 @@ class EvaluateActiveStrategiesUseCase:
         atr_pct_now: Optional[float],
         total_width_override: Optional[float] = None,
         pool_type: Optional[str] = None,
-    ) -> Tuple[float, float, str, str, bool]:
+    ) -> Tuple[float, float, str, str, bool, float, float]:
         """
         Gera (Pa,Pb) assumindo que 'max_major_side_pct' e afins são LARGURA TOTAL do range.
         """
@@ -126,7 +126,7 @@ class EvaluateActiveStrategiesUseCase:
         Pa = P * (1.0 - pct_below)
         Pb = P * (1.0 + pct_above)
         Pa, Pb = self._ensure_valid_band(Pa, Pb, P)
-        return Pa, Pb, mode, majority, high_vol
+        return Pa, Pb, mode, majority, high_vol, pct_below_base, pct_above_base
 
     # === Breakout com confirmação por streak no episódio ===
     @staticmethod
@@ -166,9 +166,18 @@ class EvaluateActiveStrategiesUseCase:
             current = await self._episode_repo.get_open_by_strategy(strat_id)
             if current is None:
                 # abre primeira banda centrada pela tendência
-                Pa, Pb, mode, majority, _ = self._pick_band_for_trend_totalwidth(
+                Pa, Pb, mode, majority, _, pct_below, pct_above = self._pick_band_for_trend_totalwidth(
                     P, self._trend_at(ema_f, ema_s), params, atr_pct, total_width_override=params.get("standard_max_major_side_pct"), pool_type="standard"
                 )
+                
+                if majority == "token1":
+                    major_pct = pct_below*10
+                    minor_pct = pct_above*10
+                    
+                else:  # majority == "token2"
+                    major_pct = pct_above*10
+                    minor_pct = pct_below*10
+                
                 new_ep = {
                     "_id": f"ep_{strat_id}_{ts}",
                     "strategy_id": strat_id,
@@ -176,6 +185,8 @@ class EvaluateActiveStrategiesUseCase:
                     "pool_type": "standard",
                     "mode_on_open": mode,
                     "majority_on_open": majority,
+                    "target_major_pct": major_pct,  # ex: 0.90 ou 0.75
+                    "target_minor_pct": minor_pct,
                     "open_time": ts,
                     "open_time_iso": snapshot.get("created_at_iso", None),
                     "open_price": P,
@@ -190,16 +201,17 @@ class EvaluateActiveStrategiesUseCase:
                     "token1_address": params.get("token1_address"),
                 }
                 await self._episode_repo.open_new(new_ep)
-                signal = await self._reconciler.reconcile(strat_id, new_ep, symbol)
-                if signal:
+                signal_plan = await self._reconciler.reconcile(strat_id, new_ep, symbol)
+                if signal_plan:
                     await self._signal_repo.upsert_signal({
                         "strategy_id": strat_id,
                         "indicator_set_id": indicator_set["cfg_hash"],
                         "cfg_hash": indicator_set["cfg_hash"],
                         "symbol": symbol,
                         "ts": ts,
-                        "signal_type": signal["signal_type"],
-                        "payload": signal["payload"],
+                        "signal_type": signal_plan["signal_type"],
+                        "steps": signal_plan["steps"],
+                        "episode": signal_plan["episode"], 
                         "status": "PENDING",
                         "attempts": 0,
                     })
@@ -307,9 +319,18 @@ class EvaluateActiveStrategiesUseCase:
                     mode_now = next_pool_type if next_pool_type in ("standard", "high_vol") else "trend_keep"
                     majority_now = current.get("majority_on_open")  # mantém majority
                 else:
-                    Pa_new, Pb_new, mode_now, majority_now, _ = self._pick_band_for_trend_totalwidth(
+                    Pa_new, Pb_new, mode_now, majority_now, _, pct_below, pct_above = self._pick_band_for_trend_totalwidth(
                         P, trend_now, params, atr_pct, total_width_override=total_width_pct, pool_type=next_pool_type
                     )
+                    
+                if majority == "token1":
+                    major_pct = pct_below*10
+                    minor_pct = pct_above*10
+                    
+                else:  # majority == "token2"
+                    major_pct = pct_above*10
+                    minor_pct = pct_below*10
+                
                 return {
                     "_id": f"ep_{strat_id}_{ts}",
                     "strategy_id": strat_id,
@@ -317,6 +338,8 @@ class EvaluateActiveStrategiesUseCase:
                     "pool_type": next_pool_type,
                     "mode_on_open": mode_now,
                     "majority_on_open": majority_now,
+                    "target_major_pct": major_pct,  # ex: 0.90 ou 0.75
+                    "target_minor_pct": minor_pct,
                     "open_time": ts,
                     "open_time_iso": snapshot.get("created_at_iso", None),
                     "open_price": P,
@@ -352,16 +375,17 @@ class EvaluateActiveStrategiesUseCase:
 
             if new_ep:
                 await self._episode_repo.open_new(new_ep)
-                signal = await self._reconciler.reconcile(strat_id, new_ep, symbol)
-                if signal:
+                signal_plan = await self._reconciler.reconcile(strat_id, new_ep, symbol)
+                if signal_plan:
                     await self._signal_repo.upsert_signal({
                         "strategy_id": strat_id,
                         "indicator_set_id": indicator_set["cfg_hash"],
                         "cfg_hash": indicator_set["cfg_hash"],
                         "symbol": symbol,
                         "ts": ts,
-                        "signal_type": signal["signal_type"],
-                        "payload": signal["payload"],
+                        "signal_type": signal_plan["signal_type"],
+                        "steps": signal_plan["steps"],
+                        "episode": signal_plan["episode"], 
                         "status": "PENDING",
                         "attempts": 0,
                     })
