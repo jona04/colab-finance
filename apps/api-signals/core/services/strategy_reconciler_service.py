@@ -53,10 +53,9 @@ class StrategyReconcilerService:
 
         # No LP or no position yet -> first time open
         if not lp_status or not lp_status.get("pool"):
-            return {
-                "strategy_id": strategy_id,
-                "signal_type": "OPEN_NEW_RANGE",
-                "steps": [
+            if dex and alias:
+                # temos vault configurado, só ainda não abriu range -> podemos pedir REBALANCE direto
+                steps = [
                     {
                         "action": "REBALANCE",
                         "payload": {
@@ -64,10 +63,27 @@ class StrategyReconcilerService:
                             "alias": alias,
                             "lower_price": Pa_des,
                             "upper_price": Pb_des,
-                            # caps / ticks computed later by executor
+                            # caps / ticks serão decididos em runtime pelo executor
                         },
                     }
-                ],
+                ]
+            else:
+                # não temos dex/alias => não tem infra. Registrar intenção apenas.
+                steps = [
+                    {
+                        "action": "NOOP_LEGACY",
+                        "payload": {
+                            "reason": "FIRST_OPEN_NO_VAULT",
+                            "lower_price": Pa_des,
+                            "upper_price": Pb_des,
+                        },
+                    }
+                ]
+
+            return {
+                "strategy_id": strategy_id,
+                "signal_type": "OPEN_NEW_RANGE",
+                "steps": steps,
                 "episode": desired,
                 "symbol": symbol,
             }

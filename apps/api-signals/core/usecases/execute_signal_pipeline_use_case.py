@@ -69,6 +69,13 @@ class ExecuteSignalPipelineUseCase:
             action = step.get("action")
             self._logger.info("Executing step %s for %s/%s", action, dex, alias)
 
+            if (not dex or not alias) and action != "NOOP_LEGACY":
+                self._logger.info(
+                    "Skipping step %s because no dex/alias is wired for this strategy.",
+                    action,
+                )
+                continue
+            
             success = False
             last_err: Optional[str] = None
 
