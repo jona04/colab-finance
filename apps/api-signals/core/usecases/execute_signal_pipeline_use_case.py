@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from typing import Dict, List, Optional
+from math import sqrt
+from typing import Dict, List, Optional, Tuple
 
 from ...core.repositories.strategy_episode_repository import StrategyEpisodeRepository
 
@@ -39,6 +40,53 @@ class ExecuteSignalPipelineUseCase:
         self._logger = logger or logging.getLogger(self.__class__.__name__)
         self._max_retries = max_retries
         self._base_backoff = base_backoff_sec
+        self.EPS_POS = 1e-12  # usado para clamps de raiz e separação Pa<P<Pb
+        
+    def _tokens_from_L(self, L, Pa, Pb, P):
+        xa, xb, x = sqrt(Pa), sqrt(Pb), sqrt(P)
+        if P <= Pa:   # tudo vira token0
+            t0 = L * (1/xa - 1/xb); t1 = 0
+        elif P >= Pb: # tudo vira token1
+            t0 = 0; t1 = L * (xb - xa)
+        else:         # misto
+            t0 = L * (1/x - 1/xb)
+            t1 = L * (x - xa)
+        return t0, t1
+
+    def _ensure_valid_band(self, Pa: float, Pb: float, P: float) -> Tuple[float, float]:
+        """
+        Garante:
+        - Pa >= EPS_POS
+        - Pb >= Pa + EPS_POS
+        - Banda não degenera no mid (respeita almofada mínima em torno de P)
+        """
+        Pa = max(self.EPS_POS, Pa)
+        Pb = max(Pa + self.EPS_POS, Pb)
+
+        # almofada mínima ao redor de P (como você já faz em alguns pontos)
+        mid_pad = self.EPS_POS * max(1.0, P)
+        Pa = min(P - mid_pad, Pa)
+        Pb = max(P + mid_pad, Pb)
+
+        # Se por alguma razão Pa ultrapassou Pb após clamps, corrige separando pelo mid_pad:
+        if not (Pa < Pb):
+            Pa = P - mid_pad
+            Pb = P + mid_pad
+
+        return Pa, Pb
+
+    def _L_closed(self, total_P: float, P: float, Pa: float, Pb: float) -> float:
+        # assegura banda válida
+        Pa, Pb = self._ensure_valid_band(Pa, Pb, P)
+
+        a  = sqrt(max(self.EPS_POS, P))
+        xa = sqrt(max(self.EPS_POS, Pa))
+        xb = sqrt(max(self.EPS_POS, Pb))
+
+        denom = 2 * a - xa - (P / xb)
+        if denom <= 0:
+            denom = self.EPS_POS
+        return total_P / denom
 
     async def execute_once(self) -> None:
         """
@@ -86,7 +134,7 @@ class ExecuteSignalPipelineUseCase:
         token0_addr = episode.get("token0_address")
         token1_addr = episode.get("token1_address")
         majority_flag = episode.get("majority_on_open")
-        
+
         for step in steps:
             action = step.get("action")
             self._logger.info("Executing step %s for %s/%s", action, dex, alias)
@@ -159,7 +207,7 @@ class ExecuteSignalPipelineUseCase:
                         st = await self._lp.get_status(dex, alias)
                         if not st:
                             raise RuntimeError("status_unavailable_before_swap")
-
+                        
                         holdings = st.get("holdings", {}) or {}
                         totals = holdings.get("totals", {}) or {}
                         amt0 = float(totals.get("token0", 0.0))
@@ -168,9 +216,7 @@ class ExecuteSignalPipelineUseCase:
                         prices = st.get("prices", {}) or {}
                         current_prices = prices.get("current", {}) or {}
                         p_t1_t0 = float(current_prices.get("p_t1_t0", 0.0))
-                        # p_t1_t0 = "token1 per token0"
-                        # -> valor USD do token0 em termos de token1 (USDC). Perfeito p/ converter amt0 -> USD.
-
+                    
                         # log snapshot BEFORE swap calc
                         await self._append_log(
                             episode_id,
@@ -204,49 +250,43 @@ class ExecuteSignalPipelineUseCase:
                             usd0 = amt0 * p_t1_t0  # quanto vale nosso token0 em USDC
                             usd1 = amt1            # token1 já é USDC
                             total_usd = usd0 + usd1
-
-                            target_major_pct = float(episode.get("target_major_pct", 0.5))
-                            target_minor_pct = float(episode.get("target_minor_pct", 0.5))
-
+                            P = p_t1_t0
+                            
+                            Pa = step["payload"].get("lower_price")
+                            Pb = step["payload"].get("upper_price")
+                            L_target = self._L_closed(total_usd, P, Pa, Pb)
+                            t0_needed, t1_needed = self._tokens_from_L(L_target, Pa, Pb, P)
+                            
                             majority_flag = episode.get("majority_on_open")
                             
-                            if majority_flag == "token2":
-                                major_side = "token0"
-                                major_curr_usd = usd0
-                                target_major_usd = total_usd * target_major_pct
-                                delta_usd = target_major_usd - major_curr_usd
-
-                                if delta_usd > 0.0:
-                                    # comprar WETH usando USDC
-                                    token_in_addr = token1_addr   # USDC
-                                    token_out_addr = token0_addr  # WETH
-                                    direction = "USDC->WETH"
-                                    req_amount_usd = delta_usd
-                                else:
-                                    # comprar USDC usando WETH
-                                    token_in_addr = token0_addr   # WETH
-                                    token_out_addr = token1_addr  # USDC
+                            if majority_flag == "token1":
+                                # queremos alinhar token1 (USDC-like)
+                                falta_t1 = t1_needed - usd1
+                                if falta_t1 > 0:
+                                    token_in_addr = token0_addr  # vender WETH
+                                    token_out_addr = token1_addr # comprar USDC
+                                    req_amount_usd = falta_t1
                                     direction = "WETH->USDC"
-                                    req_amount_usd = (-delta_usd)
-                            
+                                else:
+                                    token_in_addr = token1_addr  # vender USDC
+                                    token_out_addr = token0_addr # comprar WETH
+                                    req_amount_usd = (-falta_t1)
+                                    direction = "USDC->WETH"
+                                    
                             else:
-                                major_side = "token1"
-                                major_curr_usd = usd1
-                                target_major_usd = total_usd * target_major_pct
-                                delta_usd = target_major_usd - major_curr_usd
-
-                                if delta_usd > 0.0:
-                                    # comprar USDC usando WETH
-                                    token_in_addr = token0_addr   # WETH
-                                    token_out_addr = token1_addr  # USDC
-                                    direction = "WETH->USDC"
-                                    req_amount_usd = delta_usd
-                                else:
-                                    # comprar WETH usando USDC
-                                    token_in_addr = token1_addr   # USDC
-                                    token_out_addr = token0_addr  # WETH
+                                # majority_flag == "token2" (WETH)
+                                t0_needed_usd = t0_needed * P
+                                falta_t0  = t0_needed_usd - usd0
+                                if falta_t0 > 0:
+                                    token_in_addr = token1_addr  # vender USDC
+                                    token_out_addr = token0_addr # comprar WETH
+                                    req_amount_usd = falta_t0
                                     direction = "USDC->WETH"
-                                    req_amount_usd = (-delta_usd)
+                                else:
+                                    token_in_addr = token0_addr  # vender WETH
+                                    token_out_addr = token1_addr # comprar USDC
+                                    req_amount_usd = (-falta_t0)
+                                    direction = "WETH->USDC"
 
                             # para evitar o valor exato e causar erros de saldo
                             req_amount_usd = req_amount_usd - 0.01
@@ -259,16 +299,16 @@ class ExecuteSignalPipelineUseCase:
                                     "phase": "calc_swap",
                                     "attempt": attempt + 1,
                                     "majority_flag": majority_flag,
-                                    "major_side": major_side,
                                     "p_t1_t0": p_t1_t0,
                                     "usd0": usd0,
                                     "usd1": usd1,
                                     "total_usd": total_usd,
-                                    "target_major_pct": target_major_pct,
-                                    "target_minor_pct": target_minor_pct,
-                                    "target_major_usd": target_major_usd,
-                                    "major_curr_usd": major_curr_usd,
-                                    "delta_usd": delta_usd,
+                                    "t0_needed":t0_needed if t0_needed else None,
+                                    "t1_needed": t1_needed if t1_needed else None,
+                                    "falta_t1": falta_t1 if falta_t1 else None,
+                                    "falta_t0": falta_t0 if falta_t0 else None,
+                                    "t0_needed_usd": t0_needed_usd if t0_needed_usd else None,
+                                    "req_amount_usd": req_amount_usd if req_amount_usd else None,
                                     "direction": direction,
                                     "request_amount_in_usd": req_amount_usd,
                                 },

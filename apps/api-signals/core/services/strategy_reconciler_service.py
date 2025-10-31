@@ -157,7 +157,8 @@ class StrategyReconcilerService:
                 "payload": {
                     "dex": dex,
                     "alias": alias,
-                    # token_in / token_out / amount decided at runtime
+                    "lower_price": Pa_des, # nao é usado no payload, mas para calcular swap
+                    "upper_price": Pb_des, # nao é usado no payload, mas para calcular swap
                 },
             })
             steps.append({
