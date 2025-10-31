@@ -90,14 +90,14 @@ class RealtimeSupervisor:
         strategy_repo = StrategyRepositoryMongoDB(self._db)
         episode_repo = StrategyEpisodeRepositoryMongoDB(self._db)
         signal_repo = SignalRepositoryMongoDB(self._db)
-
+        
         await indicator_set_repo.ensure_indexes()
         await strategy_repo.ensure_indexes()
         await episode_repo.ensure_indexes()
         await signal_repo.ensure_indexes()
 
         # pipeline/vault HTTP client (our LP bridge)
-        pipeline_base_url = os.getenv("LP_BASE_URL", "http://localhost:8000")
+        pipeline_base_url = os.getenv("LP_BASE_URL", "http://172.17.0.1:8000")
         pipeline_http = PipelineHttpClient(pipeline_base_url)
 
         # Reconciler: turns desired band -> ordered steps [COLLECT, WITHDRAW, SWAP, REBALANCE]
@@ -126,6 +126,7 @@ class RealtimeSupervisor:
         # Signal executor: drains PENDING and hits the pipeline HTTP in loop
         self._signal_executor_uc = ExecuteSignalPipelineUseCase(
             signal_repo=signal_repo,
+            episode_repo = episode_repo,
             lp_client=pipeline_http,
         )
 

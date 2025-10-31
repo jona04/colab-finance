@@ -15,11 +15,6 @@ class TxService:
         self.w3 = Web3(Web3.HTTPProvider(rpc_url or s.RPC_URL_DEFAULT))
         self.pk = s.PRIVATE_KEY
         self.account = Account.from_key(self.pk)
-
-        print("🔍 [TxService] RPC_URL_DEFAULT =", s.RPC_URL_DEFAULT)
-        print("🔍 [TxService] PRIVATE_KEY (prefix) =", s.PRIVATE_KEY)
-        print("🔍 [TxService] rpc_url arg =", rpc_url)
-        print("🔍 [TxService] Using account =", self.account.address)
         
     def _base_tx(self) -> dict:
         addr = self.account.address
@@ -40,15 +35,41 @@ class TxService:
     def sender_address(self) -> str:
         return self.account.address
     
-    def send(self, fn: ContractFunction, gas: Optional[int]=None, value: int=0, wait: bool=False) -> str:
+    def send(
+        self,
+        fn: ContractFunction,
+        gas: Optional[int] = None,
+        value: int = 0,
+        wait: bool = False,
+    ) -> dict:
+        """
+        Execute contract function.
+        Returns:
+          {
+            "tx_hash": "0x...",
+            "receipt": {...} OR None if wait=False
+          }
+        """
         tx = fn.build_transaction({**self._base_tx(), "value": value})
-        if gas: tx["gas"] = gas
+        if gas:
+            tx["gas"] = gas
         tx = self._finalize_gas(tx)
+
         signed = self.w3.eth.account.sign_transaction(tx, self.pk)
         txh = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        if wait:
-            self.w3.eth.wait_for_transaction_receipt(txh)
-        return txh.hex()
+
+        if not wait:
+            return {
+                "tx_hash": txh.hex(),
+                "receipt": None,
+            }
+
+        rcpt = self.w3.eth.wait_for_transaction_receipt(txh)
+        # rcpt tem gasUsed, status, etc.
+        return {
+            "tx_hash": txh.hex(),
+            "receipt": dict(rcpt),
+        }
 
     def deploy(self, abi: list, bytecode: str, ctor_args: Sequence[Any] = (), gas: Optional[int]=None, wait: bool=True) -> dict:
         """

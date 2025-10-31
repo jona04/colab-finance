@@ -14,7 +14,7 @@ class PipelineHttpClient:
     This client does *no* strategy logic, only raw HTTP.
     """
 
-    def __init__(self, base_url: str, timeout_sec: float = 25.0):
+    def __init__(self, base_url: str, timeout_sec: float = 55.0):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_sec
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -141,4 +141,45 @@ class PipelineHttpClient:
                 self._logger.warning("rebalance non-200 %s: %s %s", url, r.status_code, r.text)
         except Exception as exc:
             self._logger.exception("post_rebalance error for %s: %s", url, exc)
+        return None
+
+    async def post_open(
+        self,
+        dex: str,
+        alias: str,
+        lower_price: Optional[float] = None,
+        upper_price: Optional[float] = None,
+        lower_tick: Optional[int] = None,
+        upper_tick: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        POST /api/vaults/{dex}/{alias}/open
+
+        body:
+        {
+          "lower_tick": int | null,
+          "upper_tick": int | null,
+          "lower_price": float | null,
+          "upper_price": float | null
+        }
+
+        Sem cap0/cap1 aqui, porque na versão nova o open só precisa saber
+        qual faixa abrir. O contrato usa os saldos idle atuais do vault.
+        """
+        url = f"{self._base_url}/api/vaults/{dex}/{alias}/open"
+        payload = {
+            "lower_tick": lower_tick,
+            "upper_tick": upper_tick,
+            "lower_price": lower_price,
+            "upper_price": upper_price,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                r = await client.post(url, json=payload)
+                if r.status_code == 200:
+                    return r.json()
+                self._logger.warning("open non-200 %s: %s %s", url, r.status_code, r.text)
+        except Exception as exc:
+            self._logger.exception("post_open error for %s: %s", url, exc)
         return None

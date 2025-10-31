@@ -6,10 +6,10 @@
   "created_at": "2025-10-30T01:04:39.378173",
   "positions": [],
   "fees_collected_cum": {
-    "token0_raw": 551703534877,
-    "token1_raw": 2125
+    "token0_raw": 580711291332,
+    "token1_raw": 2240
   },
-  "fees_cum_usd": 0.004219987064248555,
+  "fees_cum_usd": 0.004447413320371271,
   "exec_history": [
     {
       "ts": "2025-10-30T01:04:39.378589",
@@ -114,6 +114,17 @@
       "ts": "2025-10-30T16:50:21.425341",
       "mode": "collect",
       "tx": "3a9c28e5455f73c98be9b89cf6bfad12706703290e0f488235fd4759e9d256b7"
+    },
+    {
+      "ts": "2025-10-31T12:20:06.846373",
+      "mode": "collect",
+      "tx": "f3a9c192bbbd3e180c6c3d9d7038a14f0dd90d635935e036bb1377e14c33be14"
+    },
+    {
+      "ts": "2025-10-31T12:20:48.826110",
+      "mode": "exit_withdraw",
+      "to": "0x5EFA25558E5D625155D14531a2D2713998bd247B",
+      "tx": "3bafee86fe8a37144a509773920b8f83a4d76edc34a3b3c8b4a3dc2a2b4e1d90"
     }
   ],
   "collect_history": [
@@ -130,6 +141,13 @@
       "fees1_raw": 1958,
       "fees_usd_est": 0.0038945032614971483,
       "tx": "3a9c28e5455f73c98be9b89cf6bfad12706703290e0f488235fd4759e9d256b7"
+    },
+    {
+      "ts": "2025-10-31T12:20:06.845933",
+      "fees0_raw": 29007756455,
+      "fees1_raw": 115,
+      "fees_usd_est": 0.00022742625612271651,
+      "tx": "f3a9c192bbbd3e180c6c3d9d7038a14f0dd90d635935e036bb1377e14c33be14"
     }
   ],
   "deposit_history": [
@@ -151,5 +169,5 @@
   "vault_initial_usd": 1.0000180295786798,
   "error_history": [],
   "baseline_set_ts": "2025-10-30T01:24:02.851552",
-  "last_fees_update_ts": "2025-10-30T16:50:21.424379"
+  "last_fees_update_ts": "2025-10-31T12:20:06.845422"
 }

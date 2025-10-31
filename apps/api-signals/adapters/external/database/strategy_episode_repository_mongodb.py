@@ -1,6 +1,6 @@
 import time
 from datetime import datetime, timezone
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -55,3 +55,26 @@ class StrategyEpisodeRepositoryMongoDB(StrategyEpisodeRepository):
     async def list_by_strategy(self, strategy_id: str, limit: int = 50) -> List[Dict]:
         cursor = self._col.find({"strategy_id": strategy_id}, sort=[("open_time", -1)], limit=limit, projection={"_id": False})
         return await cursor.to_list(length=limit)
+
+    async def append_execution_log(
+        self,
+        episode_id: str,
+        log: Dict[str, Any],
+    ) -> None:
+        """
+        Pushes a new execution log entry to the episode.execution_log array.
+        Adds timestamps automatically if missing.
+        """
+        now_ms = int(time.time() * 1000)
+        now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+        final_log = {
+            "ts": now_ms,
+            "ts_iso": now_iso,
+            **log,
+        }
+
+        await self._col.update_one(
+            {"_id": episode_id},
+            {"$push": {"execution_log": final_log}},
+        )

@@ -166,17 +166,17 @@ class EvaluateActiveStrategiesUseCase:
             current = await self._episode_repo.get_open_by_strategy(strat_id)
             if current is None:
                 # abre primeira banda centrada pela tendência
-                Pa, Pb, mode, majority, _, pct_below, pct_above = self._pick_band_for_trend_totalwidth(
+                Pa, Pb, mode, majority, _, pct_below_base, pct_above_base = self._pick_band_for_trend_totalwidth(
                     P, self._trend_at(ema_f, ema_s), params, atr_pct, total_width_override=params.get("standard_max_major_side_pct"), pool_type="standard"
                 )
                 
                 if majority == "token1":
-                    major_pct = pct_below*10
-                    minor_pct = pct_above*10
+                    major_pct = pct_below_base*10
+                    minor_pct = pct_above_base*10
                     
                 else:  # majority == "token2"
-                    major_pct = pct_above*10
-                    minor_pct = pct_below*10
+                    major_pct = pct_above_base*10
+                    minor_pct = pct_below_base*10
                 
                 new_ep = {
                     "_id": f"ep_{strat_id}_{ts}",
@@ -298,38 +298,38 @@ class EvaluateActiveStrategiesUseCase:
                     else (float(params.get("high_vol_max_major_side_pct")) if next_pool_type == "high_vol"
                           else float(params.get("standard_max_major_side_pct")))
                 )
-                use_preserve = False
-                in_range_now = (Pa_cur < P < Pb_cur)
-                if (
-                    inrange_mode == "preserve"
-                    and in_range_now
-                    and total_width_pct <= max(0.0, (P - Pa_cur) / P) + max(0.0, (Pb_cur - P) / P) + 1e-14
-                    and trigger not in ("cross_min", "cross_max")
-                ):
-                    use_preserve = True
+                # use_preserve = False
+                # in_range_now = (Pa_cur < P < Pb_cur)
+                # if (
+                #     inrange_mode == "preserve"
+                #     and in_range_now
+                #     and total_width_pct <= max(0.0, (P - Pa_cur) / P) + max(0.0, (Pb_cur - P) / P) + 1e-14
+                #     and trigger not in ("cross_min", "cross_max")
+                # ):
+                #     use_preserve = True
 
-                if use_preserve:
-                    # redimensiona mantendo proporções atuais (sem swap)
-                    pct_below_base = max(0.0, (P - Pa_cur) / P)
-                    pct_above_base = max(0.0, (Pb_cur - P) / P)
-                    pct_below, pct_above = self._scale_to_total_width(pct_below_base, pct_above_base, total_width_pct)
-                    Pa_new = P * (1.0 - pct_below)
-                    Pb_new = P * (1.0 + pct_above)
-                    Pa_new, Pb_new = self._ensure_valid_band(Pa_new, Pb_new, P)
-                    mode_now = next_pool_type if next_pool_type in ("standard", "high_vol") else "trend_keep"
-                    majority_now = current.get("majority_on_open")  # mantém majority
-                else:
-                    Pa_new, Pb_new, mode_now, majority_now, _, pct_below, pct_above = self._pick_band_for_trend_totalwidth(
-                        P, trend_now, params, atr_pct, total_width_override=total_width_pct, pool_type=next_pool_type
-                    )
+                # if use_preserve:
+                #     # redimensiona mantendo proporções atuais (sem swap)
+                #     pct_below_base = max(0.0, (P - Pa_cur) / P)
+                #     pct_above_base = max(0.0, (Pb_cur - P) / P)
+                #     pct_below, pct_above = self._scale_to_total_width(pct_below_base, pct_above_base, total_width_pct)
+                #     Pa_new = P * (1.0 - pct_below)
+                #     Pb_new = P * (1.0 + pct_above)
+                #     Pa_new, Pb_new = self._ensure_valid_band(Pa_new, Pb_new, P)
+                #     mode_now = next_pool_type if next_pool_type in ("standard", "high_vol") else "trend_keep"
+                #     majority_now = current.get("majority_on_open")  # mantém majority
+                # else:
+                Pa_new, Pb_new, mode_now, majority_now, _, pct_below_base, pct_above_base = self._pick_band_for_trend_totalwidth(
+                    P, trend_now, params, atr_pct, total_width_override=total_width_pct, pool_type=next_pool_type
+                )
                     
                 if majority_now == "token1":
-                    major_pct = pct_below*10
-                    minor_pct = pct_above*10
+                    major_pct = pct_below_base*10
+                    minor_pct = pct_above_base*10
                     
                 else:  # majority == "token2"
-                    major_pct = pct_above*10
-                    minor_pct = pct_below*10
+                    major_pct = pct_above_base*10
+                    minor_pct = pct_below_base*10
                 
                 return {
                     "_id": f"ep_{strat_id}_{ts}",

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 
 
 class StrategyEpisodeRepository(ABC):
@@ -35,4 +35,12 @@ class StrategyEpisodeRepository(ABC):
     @abstractmethod
     async def list_by_strategy(self, strategy_id: str, limit: int = 50) -> List[Dict]:
         """History: recent episodes for a strategy."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def append_execution_log(
+        self,
+        episode_id: str,
+        log: Dict[str, Any],
+    ) -> None:
         raise NotImplementedError

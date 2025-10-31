@@ -7,7 +7,7 @@ import token
 from fastapi import APIRouter, HTTPException, Body
 from web3 import Web3
 
-from ..routes.utils import tick_spacing_candidates
+from ..routes.utils import snapshot_status, tick_spacing_candidates
 
 from ..domain.swap import SwapExactInRequest, SwapQuoteRequest
 from ..config import get_settings
@@ -110,55 +110,158 @@ def status(dex: str, alias: str):
 @router.post("/vaults/{dex}/{alias}/open")
 def open_position(dex: str, alias: str, req: OpenRequest):
     v = vault_repo.get_vault(dex, alias)
-    if not v: raise HTTPException(404, "Unknown alias")
-    if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
+    if not v:
+        raise HTTPException(404, "Unknown alias")
+    if not v.get("pool"):
+        raise HTTPException(400, "Vault has no pool set")
 
     state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
-    
-    cons = ad.vault_constraints()
-    b0, b1, meta = ad.vault_idle_balances()
-    width = int(req.lower) - int(req.upper) if int(req.lower) > int(req.upper) else int(req.upper) - int(req.lower)
 
-    # 1) owner
+    cons = ad.vault_constraints()
+    meta = ad.pool_meta()
+    dec0 = int(meta["dec0"])
+    dec1 = int(meta["dec1"])
+    spacing = int(meta.get("spacing") or cons.get("tickSpacing") or 0)
+
+    # -------- owner check
     from_addr = TxService(v.get("rpc_url")).sender_address()
     if cons.get("owner") and from_addr and cons["owner"].lower() != from_addr.lower():
-        raise HTTPException(400, f"Sender is not vault owner. owner={cons['owner']} sender={from_addr}")
+        raise HTTPException(
+            400,
+            f"Sender is not vault owner. owner={cons['owner']} sender={from_addr}"
+        )
 
-    # 2) twap/cooldown
+    # -------- twap / cooldown check
     if cons.get("twapOk") is False:
         raise HTTPException(400, "TWAP guard not satisfied (twapOk=false).")
+
     if cons.get("minCooldown") and cons.get("lastRebalance"):
         import time
         if time.time() < cons["lastRebalance"] + cons["minCooldown"]:
             raise HTTPException(400, "Cooldown not finished yet (minCooldown).")
 
-    # 3) width vs spacing/min/max
-    spacing = cons.get("tickSpacing") or meta["spacing"]
-    if req.lower % spacing != 0 or req.upper % spacing != 0:
-        raise HTTPException(400, f"Ticks must be multiples of spacing={spacing}.")
+    # -------- saldos idle (precisamos ter algo pra abrir)
+    bal0_raw, bal1_raw, _vault_meta = ad.vault_idle_balances()
+    if bal0_raw == 0 and bal1_raw == 0:
+        raise HTTPException(
+            400,
+            "Vault has no idle balances to mint liquidity (both token balances are zero)."
+        )
+
+    # -------- resolver lower_tick / upper_tick
+    lower_tick = req.lower_tick
+    upper_tick = req.upper_tick
+
+    if lower_tick is None or upper_tick is None:
+        # tentar via preço p_t1_t0 (token1 per token0), igual rebalance
+        if req.lower_price is None or req.upper_price is None:
+            raise HTTPException(
+                400,
+                "You must provide either (lower_tick and upper_tick) OR (lower_price and upper_price)."
+            )
+        lower_tick = price_to_tick(float(req.lower_price), dec0, dec1)
+        upper_tick = price_to_tick(float(req.upper_price), dec0, dec1)
+
+    # garantir ordem asc (lower < upper)
+    if lower_tick > upper_tick:
+        tmp = lower_tick
+        lower_tick = upper_tick
+        upper_tick = tmp
+
+    # alinhar pro múltiplo de spacing
+    if spacing:
+        if lower_tick % spacing != 0:
+            lower_tick = int(round(lower_tick / spacing) * spacing)
+        if upper_tick % spacing != 0:
+            upper_tick = int(round(upper_tick / spacing) * spacing)
+
+    # validar largura vs minWidth / maxWidth
+    width = abs(int(upper_tick) - int(lower_tick))
     if cons.get("minWidth") and width < cons["minWidth"]:
-        raise HTTPException(400, f"Width too small: {width} < minWidth={cons['minWidth']}.")
+        raise HTTPException(
+            400,
+            f"Width too small: {width} < minWidth={cons['minWidth']}."
+        )
     if cons.get("maxWidth") and width > cons["maxWidth"]:
-        raise HTTPException(400, f"Width too large: {width} > maxWidth={cons['maxWidth']}.")
+        raise HTTPException(
+            400,
+            f"Width too large: {width} > maxWidth={cons['maxWidth']}."
+        )
 
-    # 4) saldos
-    if b0 == 0 and b1 == 0:
-        raise HTTPException(400, "Vault has no idle balances to mint liquidity (both token balances are zero).")
+    # -------- snapshot before
+    before = snapshot_status(ad, dex, alias)
 
+    # -------- montar tx openInitialPosition(lower, upper)
+    # no contrato Solidity: vault.openInitialPosition(int24 lower, int24 upper)
+    # no adapter python: ad.fn_open(lower, upper)
+    fn = ad.fn_open(int(lower_tick), int(upper_tick))
 
-    fn = ad.fn_open(req.lower, req.upper)
-    txh = TxService(v.get("rpc_url")).send(fn)
-    
+    txs = TxService(v.get("rpc_url"))
+    send_res = txs.send(fn, wait=True)
+    tx_hash = send_res["tx_hash"]
+    rcpt = send_res["receipt"] or {}
+
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+    gas_eth = None
+    gas_usd = None
+    if gas_used and eff_price_wei:
+        # gas em ETH
+        gas_eth = float(
+            (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+        )
+
+        # tentar precificar ETH->USD (igual rebalance_swap logic)
+        meta2 = ad.pool_meta()
+        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+        sym0b, sym1b = str(meta2["sym0"]).upper(), str(meta2["sym1"]).upper()
+        sqrtPb, _ = ad.slot0()
+        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+
+        if sym1b in USD_SYMBOLS and sym0b in {"WETH", "ETH"}:
+            gas_usd = gas_eth * p_t1_t0b
+        elif sym0b in USD_SYMBOLS and sym1b in {"WETH", "ETH"}:
+            gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0 / p_t1_t0b)
+
+    # -------- snapshot after
+    after = snapshot_status(ad, dex, alias)
+
+    # -------- histórico
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
-        "mode": "open",
-        "lower": req.lower,
-        "upper": req.upper,
-        "tx": txh
+        "mode": "open_initial",
+        "lower_tick": int(lower_tick),
+        "upper_tick": int(upper_tick),
+        "lower_price": float(req.lower_price) if req.lower_price is not None else None,
+        "upper_price": float(req.upper_price) if req.upper_price is not None else None,
+        "tx": tx_hash,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
     })
-    
-    return {"tx": txh}
+
+    return {
+        "tx": tx_hash,
+        "range_used": {
+            "lower_tick": int(lower_tick),
+            "upper_tick": int(upper_tick),
+            "width_ticks": width,
+            "spacing": spacing,
+            "lower_price": float(req.lower_price) if req.lower_price is not None else None,
+            "upper_price": float(req.upper_price) if req.upper_price is not None else None,
+        },
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "effective_gas_price_gwei": (float(eff_price_wei)/1e9 if eff_price_wei else None),
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "before": before,
+        "after": after,
+    }
+
 
 @router.post("/vaults/{dex}/{alias}/rebalance")
 def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
@@ -187,10 +290,8 @@ def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
     if cons.get("minCooldown") and cons.get("lastRebalance"):
         if time.time() < cons["lastRebalance"] + cons["minCooldown"]:
             raise HTTPException(400, "Cooldown not finished yet (minCooldown).")
-        
-   #
+     
     # ---- resolver LOWER / UPPER em ticks
-    #
     lower_tick = req.lower_tick
     upper_tick = req.upper_tick
 
@@ -238,10 +339,31 @@ def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
     if req.cap1 is not None:
         cap1_raw = int(float(req.cap1) * (10 ** dec1))
 
+    before = snapshot_status(ad, dex, alias)
+    
     # ---- montar tx rebalanceWithCaps(lower_tick, upper_tick, cap0_raw, cap1_raw)
     fn = ad.fn_rebalance_caps(lower_tick, upper_tick, cap0_raw, cap1_raw)
     txs = TxService(v.get("rpc_url"))
-    txh = txs.send(fn)
+    send_res = txs.send(fn, wait=True)
+    tx_hash = send_res["tx_hash"]
+    rcpt = send_res["receipt"] or {}
+
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei:
+        gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
+        meta2 = ad.pool_meta()
+        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+        sym0b, sym1b = str(meta2["sym0"]).upper(), str(meta2["sym1"]).upper()
+        sqrtPb, _ = ad.slot0()
+        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+        if sym1b in USD_SYMBOLS and sym0b in {"WETH","ETH"}:
+            gas_usd = gas_eth * p_t1_t0b
+        elif sym0b in USD_SYMBOLS and sym1b in {"WETH","ETH"}:
+            gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0/p_t1_t0b)
+
+    after = snapshot_status(ad, dex, alias)
 
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
@@ -252,17 +374,29 @@ def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
         "upper_price": float(req.upper_price) if req.upper_price is not None else None,
         "cap0": req.cap0,
         "cap1": req.cap1,
-        "tx": txh
+        "tx": tx_hash,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
     })
 
     return {
-        "tx": txh,
-        "lower_tick": lower_tick,
-        "upper_tick": upper_tick,
-        "lower_price": float(req.lower_price) if req.lower_price is not None else None,
-        "upper_price": float(req.upper_price) if req.upper_price is not None else None,
-        "spacing": spacing,
-        "width_ticks": width,
+        "tx": tx_hash,
+        "range_used": {
+            "lower_tick": lower_tick,
+            "upper_tick": upper_tick,
+            "width_ticks": width,
+            "spacing": spacing,
+            "lower_price": float(req.lower_price) if req.lower_price is not None else None,
+            "upper_price": float(req.upper_price) if req.upper_price is not None else None,
+        },
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "before": before,
+        "after": after,
     }
 
 @router.post("/vaults/{dex}/{alias}/withdraw")
@@ -275,20 +409,57 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
     txs = TxService(v.get("rpc_url"))
     
+    before = snapshot_status(ad, dex, alias)
+    
     if req.mode == "pool":
         fn = ad.fn_exit()
     else:
         to_addr = txs.sender_address()
         fn = ad.fn_exit_withdraw(to_addr)
         
-    txh = txs.send(fn)
+    send_res = txs.send(fn, wait=True)
+    tx_hash = send_res["tx_hash"]
+    rcpt = send_res["receipt"] or {}
+
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei:
+        gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
+        # tentar converter pra USD com mesma heurística
+        meta2 = ad.pool_meta()
+        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+        sym0b, sym1b = str(meta2["sym0"]).upper(), str(meta2["sym1"]).upper()
+        sqrtPb, _ = ad.slot0()
+        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+        if sym1b in USD_SYMBOLS and sym0b in {"WETH","ETH"}:
+            gas_usd = gas_eth * p_t1_t0b
+        elif sym0b in USD_SYMBOLS and sym1b in {"WETH","ETH"}:
+            gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0/p_t1_t0b)
+
+    after = snapshot_status(ad, dex, alias)
+
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
-        "mode": ("exit" if req.mode == "pool" else "exit_withdraw"),
+        "mode": ("exit_pool" if req.mode == "pool" else "exit_all"),
         "to": txs.sender_address() if req.mode != "pool" else None,
-        "tx": txh
+        "tx": tx_hash,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
     })
-    return {"tx": txh}
+
+    return {
+        "tx": tx_hash,
+        "mode": ("exit" if req.mode == "pool" else "exit_withdraw"),
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "before": before,
+        "after": after,
+    }
 
 @router.post("/vaults/{dex}/{alias}/collect")
 def collect(dex: str, alias: str, _req: CollectRequest):
@@ -321,6 +492,9 @@ def collect(dex: str, alias: str, _req: CollectRequest):
     state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
 
+    # snapshot BEFORE
+    before = snapshot_status(ad, dex, alias)
+    
     # --- fetch meta + live status (for price conversion)
     snap: StatusCore = compute_status(ad, dex, alias)  # Pydantic model
     meta = ad.pool_meta()
@@ -360,10 +534,31 @@ def collect(dex: str, alias: str, _req: CollectRequest):
         # fallback: treat token1 as quote
         pre_fees_usd = pre_fees0 * p_t1_t0 + pre_fees1
 
-    # --- execute collect
-    fn = ad.fn_collect()
-    txh = TxService(v.get("rpc_url")).send(fn)
+    # execute tx (collectToVault)
+    txs = TxService(v.get("rpc_url"))
+    send_res = txs.send(ad.fn_collect(), wait=True)
+    tx_hash = send_res["tx_hash"]
+    rcpt = send_res["receipt"] or {}
 
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+    gas_eth = None
+    gas_usd = None
+    if gas_used and eff_price_wei:
+        gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
+        # tentar converter ETH→USD usando mesma heurística que swap usa
+        meta2 = ad.pool_meta()
+        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+        sym0b, sym1b = str(meta2["sym0"]).upper(), str(meta2["sym1"]).upper()
+        sqrtPb, _ = ad.slot0()
+        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+        # se par é [ETH,USDC] ou [USDC,ETH] a gente estima gas_usd
+        if sym1b in USD_SYMBOLS and sym0b in {"WETH","ETH"}:
+            gas_usd = gas_eth * p_t1_t0b
+        elif sym0b in USD_SYMBOLS and sym1b in {"WETH","ETH"}:
+            gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0/p_t1_t0b)
+            
     # --- persist snapshot and history (using *preview* values)
     state_repo.add_collected_fees_snapshot(
         dex, alias,
@@ -376,15 +571,34 @@ def collect(dex: str, alias: str, _req: CollectRequest):
         "fees0_raw": int(fees0_raw),
         "fees1_raw": int(fees1_raw),
         "fees_usd_est": float(pre_fees_usd),
-        "tx": txh
+        "tx": tx_hash
     })
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "collect",
-        "tx": txh
+        "tx": tx_hash,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
     })
 
-    return {"tx": txh}
+    after = snapshot_status(ad, dex, alias)
+
+    return {
+        "tx": tx_hash,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "collected_preview": {
+            "token0": pre_fees0,
+            "token1": pre_fees1,
+            "usd_est": float(pre_fees_usd),
+        },
+        "before": before,
+        "after": after,
+    }
 
 @router.post("/vaults/{dex}/{alias}/deposit")
 def deposit(dex: str, alias: str, req: DepositRequest):
@@ -399,24 +613,65 @@ def deposit(dex: str, alias: str, req: DepositRequest):
     dec = ad.erc20(tok).functions.decimals().call()
     amount_raw = int(float(req.amount) * (10 ** int(dec)))
     
-    fn = ad.fn_deposit_erc20(tok, amount_raw)
-    txh = TxService(v.get("rpc_url")).send(fn)
-    
+    before = snapshot_status(ad, dex, alias)
+
+    txs = TxService(v.get("rpc_url"))
+    send_res = txs.send(ad.fn_deposit_erc20(tok, amount_raw), wait=True)
+    tx_hash = send_res["tx_hash"]
+    rcpt = send_res["receipt"] or {}
+
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei:
+        gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
+        meta2 = ad.pool_meta()
+        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+        sym0b, sym1b = str(meta2["sym0"]).upper(), str(meta2["sym1"]).upper()
+        sqrtPb, _ = ad.slot0()
+        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+        if sym1b in USD_SYMBOLS and sym0b in {"WETH","ETH"}:
+            gas_usd = gas_eth * p_t1_t0b
+        elif sym0b in USD_SYMBOLS and sym1b in {"WETH","ETH"}:
+            gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0/p_t1_t0b)
+
+    after = snapshot_status(ad, dex, alias)
+
     state_repo.append_history(dex, alias, "deposit_history", {
         "ts": datetime.utcnow().isoformat(),
         "token": tok,
         "amount_human": float(req.amount),
         "amount_raw": int(amount_raw),
-        "tx": txh
+        "tx": tx_hash,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
     })
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "deposit",
         "token": tok,
         "amount_human": float(req.amount),
-        "tx": txh
+        "tx": tx_hash,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
     })
-    return {"tx": txh}
+
+    return {
+        "tx": tx_hash,
+        "token": tok,
+        "amount_human": float(req.amount),
+        "amount_raw": int(amount_raw),
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "before": before,
+        "after": after,
+    }
 
 @router.post("/vaults/{dex}/{alias}/baseline")
 def baseline(dex: str, alias: str, req: BaselineRequest):
@@ -572,7 +827,6 @@ def stake_nft(dex: str, alias: str, req: StakeRequest):
         "tx": txh
     })
     return {"tx": txh}
-
 
 @router.post("/vaults/{dex}/{alias}/unstake")
 def unstake_nft(dex: str, alias: str, req: UnstakeRequest):
@@ -854,7 +1108,6 @@ def swap_exact_in(alias: str, req: SwapExactInRequest):
         "gas_usd": gas_usd,
         "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
     }
-    
 
 @router.post("/vaults/aerodrome/{alias}/swap/quote")
 def aero_swap_quote(alias: str, req: SwapQuoteRequest):
@@ -945,6 +1198,8 @@ def aero_swap_quote(alias: str, req: SwapQuoteRequest):
 
 @router.post("/vaults/aerodrome/{alias}/swap/exact-in")
 def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
+    dex = "aerodrome"
+    
     v = vault_repo.get_vault("aerodrome", alias)
     if not v: raise HTTPException(404, "Unknown alias (aerodrome)")
     s = get_settings()
@@ -954,6 +1209,8 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
     state_repo.ensure_state_initialized("aerodrome", alias, vault_address=v["address"])
     ad = _adapter_for("aerodrome", v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
 
+    before = snapshot_status(ad, dex, alias)
+    
     # ---- decimals e resolução de amount_in_raw (igual Uniswap)
     dec_in  = int(ad.erc20(req.token_in).functions.decimals().call())
     dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
@@ -1029,29 +1286,40 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
     )
 
     txs = TxService(v.get("rpc_url"))
-    txh = txs.send(fn)
+    send_res = txs.send(fn, wait=True)
+    tx_hash = send_res["tx_hash"]
+    rcpt = send_res["receipt"] or {}
 
-    # opcional: medir gas real (igual Uniswap)
-    gas_used = eff_price_wei = gas_eth = gas_usd = None
-    try:
-        rcpt = ad.w3.eth.wait_for_transaction_receipt(txh)
-        gas_used = int(rcpt["gasUsed"])
-        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
-        if eff_price_wei and gas_used:
-            gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
-            meta2 = ad.pool_meta()
-            sym0b, sym1b = meta2["sym0"].upper(), meta2["sym1"].upper()
-            dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
-            sqrtPb, _ = ad.slot0()
-            p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
-            if sym1b in USD_SYMBOLS and sym0b in {"WETH","ETH"}:
-                gas_usd = gas_eth * p_t1_t0b
-            elif sym0b in USD_SYMBOLS and sym1b in {"WETH","ETH"}:
-                gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0 / p_t1_t0b)
-    except Exception:
-        pass
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+    
+    gas_eth = None
+    gas_usd = None
+    if gas_used and eff_price_wei:
+        gas_eth = float(
+            (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+        )
+        meta2 = ad.pool_meta()
+        sym0b = str(meta2["sym0"]).upper()
+        sym1b = str(meta2["sym1"]).upper()
+        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+        sqrtPb, _ = ad.slot0()
+        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
 
-    state_repo.append_history("aerodrome", alias, "exec_history", {
+        if sym1b in USD_SYMBOLS and sym0b in {"WETH", "ETH"}:
+            # token0 é ETH, token1 é USD-ish -> p_t1_t0b = USDC per ETH
+            gas_usd = gas_eth * p_t1_t0b
+        elif sym0b in USD_SYMBOLS and sym1b in {"WETH", "ETH"}:
+            # token0 é USD-ish, token1 é ETH -> invertido
+            gas_usd = gas_eth * (
+                0 if p_t1_t0b == 0 else 1.0 / p_t1_t0b
+            )
+
+    # snapshot AFTER
+    after = snapshot_status(ad, dex, alias)
+
+    # histórico
+    state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "swap_exact_in_aero",
         "token_in": req.token_in,
@@ -1061,7 +1329,7 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
         "min_out_raw": min_out_raw,
         "tick_spacing_used": ts_used,
         "slippage_bps": bps,
-        "tx": txh,
+        "tx": tx_hash,
         "gas_used": gas_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
@@ -1070,16 +1338,20 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
     })
 
     return {
-        "tx": txh,
+        "tx": tx_hash,
         "tick_spacing_used": ts_used,
-        "resolved_amount_mode": resolved_mode,
+        "resolved_amount_mode": resolved_mode,   # "token" ou "usd"
         "amount_in_raw": amount_in_raw,
         "quoted_out_raw": amount_out_raw,
         "min_out_raw": min_out_raw,
         "gas_used": gas_used,
         "effective_gas_price_wei": eff_price_wei,
-        "effective_gas_price_gwei": (float(eff_price_wei)/1e9 if eff_price_wei else None),
+        "effective_gas_price_gwei": (
+            float(eff_price_wei) / 1e9 if eff_price_wei else None
+        ),
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
         "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
+        "before": before,
+        "after": after,
     }

@@ -38,13 +38,17 @@ class DeployVaultRequest(BaseModel):
     gauge: Optional[str] = None            # só Aerodrome (opcional)
     
 class OpenRequest(BaseModel):
-    alias: str
-    lower: int
-    upper: int
+    # modo ticks
+    lower_tick: Optional[int] = None
+    upper_tick: Optional[int] = None
+
+    # modo preço direto (token1 per token0)
+    lower_price: Optional[float] = None  # alvo p_t1_t0 para bound inferior
+    upper_price: Optional[float] = None  # alvo p_t1_t0 para bound superior
 
 
 class RebalanceRequest(BaseModel):
-    # modo ticks (atual)
+    # modo ticks
     lower_tick: Optional[int] = None
     upper_tick: Optional[int] = None
 

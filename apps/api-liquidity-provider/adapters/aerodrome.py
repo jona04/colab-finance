@@ -311,10 +311,6 @@ class AerodromeAdapter(DexAdapter):
         """
         Vault mutation: openInitialPosition(lower, upper).
         """
-        
-        slot0 = self.pool_contract().functions.slot0().call()
-        print("-----------------\n\n\n\n\n\n", slot0)
-    
         if hasattr(self.vault.functions, "openInitialPosition"):
             return self.vault.functions.openInitialPosition(int(lower), int(upper))
         raise NotImplementedError("Vault missing openInitialPosition")

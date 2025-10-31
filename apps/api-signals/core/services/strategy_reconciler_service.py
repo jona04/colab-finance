@@ -10,10 +10,10 @@ class StrategyReconcilerService:
     The steps array is strictly ordered. The pipeline MUST execute in order.
 
     Steps canonical order for a rotation is:
-      1) COLLECT  (harvest fees to vault)
-      2) WITHDRAW (pull liquidity from pool back to vault idle balance)
-      3) SWAP_EXACT_IN (rebalance token proportions in idle balance)
-      4) REBALANCE (open new range using idle balances)
+      1) COLLECT        (harvest fees to vault)
+      2) WITHDRAW       (pull liquidity from pool back to vault idle balance)
+      3) SWAP_EXACT_IN  (rebalance token proportions in idle balance)
+      4) OPEN           (mint new range using idle balances)
     """
 
     def __init__(self, lp_client: PipelineHttpClient):
@@ -26,12 +26,12 @@ class StrategyReconcilerService:
         Returns:
             {
               "strategy_id": "...",
-              "signal_type": "OPEN_NEW_RANGE" | "REBALANCE_TO_RANGE",
+              "signal_type": "OPEN_NEW_RANGE" | "ROTATE_RANGE",
               "steps": [
                  {"action": "COLLECT", ...},
                  {"action": "WITHDRAW", ...},
                  {"action": "SWAP_EXACT_IN", ...},
-                 {"action": "REBALANCE", ...}
+                 {"action": "OPEN", ...}
               ],
               "episode": desired,
               "symbol": symbol
@@ -54,16 +54,16 @@ class StrategyReconcilerService:
         # No LP or no position yet -> first time open
         if not lp_status or not lp_status.get("pool"):
             if dex and alias:
-                # temos vault configurado, só ainda não abriu range -> podemos pedir REBALANCE direto
+                # temos vault configurado, mas ainda não tem posição ativa
                 steps = [
                     {
-                        "action": "REBALANCE",
+                        "action": "OPEN",
                         "payload": {
                             "dex": dex,
                             "alias": alias,
                             "lower_price": Pa_des,
                             "upper_price": Pb_des,
-                            # caps / ticks serão decididos em runtime pelo executor
+                            # ticks / ticks serão decididos em runtime pelo executor
                         },
                     }
                 ]
@@ -161,13 +161,13 @@ class StrategyReconcilerService:
                 },
             })
             steps.append({
-                "action": "REBALANCE",
+                "action": "OPEN",
                 "payload": {
                     "dex": dex,
                     "alias": alias,
                     "lower_price": Pa_des,
                     "upper_price": Pb_des,
-                    # caps decided at runtime
+                    # ticks decided at runtime
                 },
             })
         else:
@@ -182,7 +182,7 @@ class StrategyReconcilerService:
 
         return {
             "strategy_id": strategy_id,
-            "signal_type": "REBALANCE_TO_RANGE",
+            "signal_type": "ROTATE_RANGE",
             "steps": steps,
             "episode": desired,
             "symbol": symbol,
