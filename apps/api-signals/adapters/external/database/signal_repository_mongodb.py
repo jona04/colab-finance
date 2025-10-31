@@ -46,7 +46,6 @@ class SignalRepositoryMongoDB(SignalRepository):
             "$setOnInsert": {
                 "created_at": now_ms,
                 "created_at_iso": now_iso,
-                "status": "PENDING",
                 "attempts": 0,
             },
         }
