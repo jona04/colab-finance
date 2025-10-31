@@ -212,6 +212,8 @@ class EvaluateActiveStrategiesUseCase:
                         "signal_type": signal_plan["signal_type"],
                         "steps": signal_plan["steps"],
                         "episode": signal_plan["episode"], 
+                        "status": "PENDING",
+                        "attempts": 0,
                     })
                 continue
 
@@ -384,4 +386,6 @@ class EvaluateActiveStrategiesUseCase:
                         "signal_type": signal_plan["signal_type"],
                         "steps": signal_plan["steps"],
                         "episode": signal_plan["episode"], 
+                        "status": "PENDING",
+                        "attempts": 0,
                     })

@@ -38,9 +38,16 @@ class SignalRepositoryMongoDB(SignalRepository):
             "ts": doc["ts"],
             "signal_type": doc["signal_type"],
         }
+        
+        set_doc = {
+            k: v
+            for (k, v) in doc.items()
+            if k not in ("status", "attempts", "created_at", "created_at_iso")
+        }
+        
         update = {
             "$set": {
-                **doc,
+                **set_doc,
                 "updated_at": now_ms,
             },
             "$setOnInsert": {
