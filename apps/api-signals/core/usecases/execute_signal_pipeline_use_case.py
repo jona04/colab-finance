@@ -172,34 +172,48 @@ class ExecuteSignalPipelineUseCase:
                         )
                         
                     elif action == "COLLECT":
-                        res = await self._lp.post_collect(dex, alias)
-                        await self._append_log(
-                            episode_id,
-                            {
-                                "step": action,
-                                "attempt": attempt + 1,
-                                "request": {"dex": dex, "alias": alias},
-                                "response": res,
-                            },
-                        )
-                        if res is None:
-                            raise RuntimeError("collect_failed")
+                        st = await self._lp.get_status(dex, alias)
+                        if not st:
+                            raise RuntimeError("status_unavailable_before_swap")
+                        
+                        position_location = st.get("position_location", None)
+                        if position_location == "pool":
+                            res = await self._lp.post_collect(dex, alias)
+                            await self._append_log(
+                                episode_id,
+                                {
+                                    "step": action,
+                                    "attempt": attempt + 1,
+                                    "request": {"dex": dex, "alias": alias},
+                                    "response": res,
+                                },
+                            )
+                            if res is None:
+                                raise RuntimeError("collect_failed")
+                        
                         success = True
-
+                            
                     elif action == "WITHDRAW":
-                        # always withdraw mode "pool" to bring capital back idle
-                        res = await self._lp.post_withdraw(dex, alias, mode="pool")
-                        await self._append_log(
-                            episode_id,
-                            {
-                                "step": action,
-                                "attempt": attempt + 1,
-                                "request": {"dex": dex, "alias": alias, "mode": "pool"},
-                                "response": res,
-                            },
-                        )
-                        if res is None:
-                            raise RuntimeError("withdraw_failed")
+                        st = await self._lp.get_status(dex, alias)
+                        if not st:
+                            raise RuntimeError("status_unavailable_before_swap")
+                        
+                        position_location = st.get("position_location", None)
+                        if position_location == "pool":
+                            # always withdraw mode "pool" to bring capital back idle
+                            res = await self._lp.post_withdraw(dex, alias, mode="pool")
+                            await self._append_log(
+                                episode_id,
+                                {
+                                    "step": action,
+                                    "attempt": attempt + 1,
+                                    "request": {"dex": dex, "alias": alias, "mode": "pool"},
+                                    "response": res,
+                                },
+                            )
+                            if res is None:
+                                raise RuntimeError("withdraw_failed")
+                            
                         success = True
 
                     elif action == "SWAP_EXACT_IN":
@@ -259,6 +273,9 @@ class ExecuteSignalPipelineUseCase:
                             
                             majority_flag = episode.get("majority_on_open")
                             
+                            falta_t0 = None
+                            falta_t1 = None
+                            t0_needed_usd = None
                             if majority_flag == "token1":
                                 # queremos alinhar token1 (USDC-like)
                                 falta_t1 = t1_needed - usd1
