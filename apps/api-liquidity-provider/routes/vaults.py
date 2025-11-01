@@ -7,6 +7,8 @@ import token
 from fastapi import APIRouter, HTTPException, Body
 from web3 import Web3
 
+from ..services.exceptions import TransactionRevertedError
+
 from ..routes.utils import snapshot_status, tick_spacing_candidates
 
 from ..domain.swap import SwapExactInRequest, SwapQuoteRequest
@@ -198,10 +200,28 @@ def open_position(dex: str, alias: str, req: OpenRequest):
     fn = ad.fn_open(int(lower_tick), int(upper_tick))
 
     txs = TxService(v.get("rpc_url"))
-    send_res = txs.send(fn, wait=True)
+    try:
+        send_res = txs.send(
+            fn,
+            wait=True,
+            gas_strategy="buffered"  # default já é "buffered", mas deixei explícito
+        )
+    except TransactionRevertedError as e:
+        # aqui eu devolvo um 500 com payload útil
+        # e.status code 500 força o caller a saber que NÃO foi sucesso
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "reverted_on_chain",
+                "tx": e.tx_hash,
+                "receipt": e.receipt,
+                "hint": "Likely out-of-gas or vault guard (cooldown/twap/allowance).",
+            }
+        )
+        
     tx_hash = send_res["tx_hash"]
     rcpt = send_res["receipt"] or {}
-
+    gas_limit_used = send_res.get("gas_limit_used")
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
 
@@ -238,6 +258,7 @@ def open_position(dex: str, alias: str, req: OpenRequest):
         "upper_price": float(req.upper_price) if req.upper_price is not None else None,
         "tx": tx_hash,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -254,6 +275,7 @@ def open_position(dex: str, alias: str, req: OpenRequest):
             "upper_price": float(req.upper_price) if req.upper_price is not None else None,
         },
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "effective_gas_price_gwei": (float(eff_price_wei)/1e9 if eff_price_wei else None),
         "gas_eth": gas_eth,
@@ -344,10 +366,22 @@ def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
     # ---- montar tx rebalanceWithCaps(lower_tick, upper_tick, cap0_raw, cap1_raw)
     fn = ad.fn_rebalance_caps(lower_tick, upper_tick, cap0_raw, cap1_raw)
     txs = TxService(v.get("rpc_url"))
-    send_res = txs.send(fn, wait=True)
+    try:
+        send_res = txs.send(fn, wait=True, gas_strategy="buffered")
+    except TransactionRevertedError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "reverted_on_chain",
+                "tx": e.tx_hash,
+                "receipt": e.receipt,
+                "hint": "Likely out-of-gas or slippage/guard.",
+            }
+        )
     tx_hash = send_res["tx_hash"]
     rcpt = send_res["receipt"] or {}
 
+    gas_limit_used = send_res.get("gas_limit_used")
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
     gas_eth = gas_usd = None
@@ -376,6 +410,7 @@ def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
         "cap1": req.cap1,
         "tx": tx_hash,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -392,6 +427,7 @@ def rebalance_caps(dex: str, alias: str, req: RebalanceRequest):
             "upper_price": float(req.upper_price) if req.upper_price is not None else None,
         },
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -417,10 +453,22 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
         to_addr = txs.sender_address()
         fn = ad.fn_exit_withdraw(to_addr)
         
-    send_res = txs.send(fn, wait=True)
+    try:
+        send_res = txs.send(fn, wait=True, gas_strategy="buffered")
+    except TransactionRevertedError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "reverted_on_chain",
+                "tx": e.tx_hash,
+                "receipt": e.receipt,
+                "hint": "Likely out-of-gas or slippage/guard.",
+            }
+        )
     tx_hash = send_res["tx_hash"]
     rcpt = send_res["receipt"] or {}
 
+    gas_limit_used = send_res.get("gas_limit_used")
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
     gas_eth = gas_usd = None
@@ -445,6 +493,7 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
         "to": txs.sender_address() if req.mode != "pool" else None,
         "tx": tx_hash,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -454,6 +503,7 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
         "tx": tx_hash,
         "mode": ("exit" if req.mode == "pool" else "exit_withdraw"),
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -536,9 +586,24 @@ def collect(dex: str, alias: str, _req: CollectRequest):
 
     # execute tx (collectToVault)
     txs = TxService(v.get("rpc_url"))
-    send_res = txs.send(ad.fn_collect(), wait=True)
+    fn = ad.fn_collect()
+    try:
+        send_res = txs.send(fn, wait=True, gas_strategy="buffered")
+    except TransactionRevertedError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "reverted_on_chain",
+                "tx": e.tx_hash,
+                "receipt": e.receipt,
+                "hint": "Likely out-of-gas or slippage/guard.",
+            }
+        )
+        
     tx_hash = send_res["tx_hash"]
     rcpt = send_res["receipt"] or {}
+
+    gas_limit_used = send_res.get("gas_limit_used")
 
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
@@ -578,6 +643,7 @@ def collect(dex: str, alias: str, _req: CollectRequest):
         "mode": "collect",
         "tx": tx_hash,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -588,6 +654,7 @@ def collect(dex: str, alias: str, _req: CollectRequest):
     return {
         "tx": tx_hash,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -616,9 +683,24 @@ def deposit(dex: str, alias: str, req: DepositRequest):
     before = snapshot_status(ad, dex, alias)
 
     txs = TxService(v.get("rpc_url"))
-    send_res = txs.send(ad.fn_deposit_erc20(tok, amount_raw), wait=True)
+    fn = ad.fn_deposit_erc20(tok, amount_raw)
+    try:
+        send_res = txs.send(fn, wait=True, gas_strategy="buffered")
+    except TransactionRevertedError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "reverted_on_chain",
+                "tx": e.tx_hash,
+                "receipt": e.receipt,
+                "hint": "Likely out-of-gas or slippage/guard.",
+            }
+        )
+        
     tx_hash = send_res["tx_hash"]
     rcpt = send_res["receipt"] or {}
+
+    gas_limit_used = send_res.get("gas_limit_used")
 
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
@@ -644,6 +726,7 @@ def deposit(dex: str, alias: str, req: DepositRequest):
         "amount_raw": int(amount_raw),
         "tx": tx_hash,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -655,6 +738,7 @@ def deposit(dex: str, alias: str, req: DepositRequest):
         "amount_human": float(req.amount),
         "tx": tx_hash,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -666,6 +750,7 @@ def deposit(dex: str, alias: str, req: DepositRequest):
         "amount_human": float(req.amount),
         "amount_raw": int(amount_raw),
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -1286,9 +1371,23 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
     )
 
     txs = TxService(v.get("rpc_url"))
-    send_res = txs.send(fn, wait=True)
+    try:
+        send_res = txs.send(fn, wait=True, gas_strategy="buffered")
+    except TransactionRevertedError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "reverted_on_chain",
+                "tx": e.tx_hash,
+                "receipt": e.receipt,
+                "hint": "Likely out-of-gas or slippage/guard.",
+            }
+        )
+        
     tx_hash = send_res["tx_hash"]
     rcpt = send_res["receipt"] or {}
+
+    gas_limit_used = send_res.get("gas_limit_used")
 
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
@@ -1331,6 +1430,7 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
         "slippage_bps": bps,
         "tx": tx_hash,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
@@ -1345,6 +1445,7 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
         "quoted_out_raw": amount_out_raw,
         "min_out_raw": min_out_raw,
         "gas_used": gas_used,
+        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "effective_gas_price_gwei": (
             float(eff_price_wei) / 1e9 if eff_price_wei else None

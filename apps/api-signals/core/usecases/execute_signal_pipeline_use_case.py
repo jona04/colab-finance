@@ -349,7 +349,8 @@ class ExecuteSignalPipelineUseCase:
                                     alias=alias,
                                     token_in=token_in_addr,
                                     token_out=token_out_addr,
-                                    amount_in_usd=req_amount_usd,
+                                    amount_in_usd=req_amount_usd if direction == "WETH->USDC" else None,
+                                    amount_in=req_amount_usd if direction == "USDC->WETH" else None
                                 )
 
                                 await self._append_log(
