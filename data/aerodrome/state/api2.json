@@ -6,10 +6,10 @@
   "created_at": "2025-10-31T12:36:09.688313",
   "positions": [],
   "fees_collected_cum": {
-    "token0_raw": 1458365670098,
-    "token1_raw": 5670
+    "token0_raw": 7627539036701,
+    "token1_raw": 29220
   },
-  "fees_cum_usd": 0.011309561753560776,
+  "fees_cum_usd": 0.05880365948201771,
   "exec_history": [
     {
       "ts": "2025-10-31T12:36:09.688755",
@@ -972,6 +972,218 @@
       "effective_gas_price_wei": 2571621,
       "gas_eth": 1.15874670639e-07,
       "gas_usd": 0.00044874233128790403
+    },
+    {
+      "ts": "2025-11-02T04:59:50.535411",
+      "mode": "collect",
+      "tx": "042b9ea01cd236434c786862179993a0c89794118e6f539290dae26e10433622",
+      "gas_used": 263042,
+      "gas_limit_used": 430446,
+      "effective_gas_price_wei": 4054196,
+      "gas_eth": 1.066423824232e-06,
+      "gas_usd": 0.004166915715449195
+    },
+    {
+      "ts": "2025-11-02T05:00:31.201556",
+      "mode": "exit_pool",
+      "to": null,
+      "tx": "11bc64986be58fe57017c964628b08799e3ca85095525f8c62a1264486d9de1e",
+      "gas_used": 335890,
+      "gas_limit_used": 538176,
+      "effective_gas_price_wei": 4022200,
+      "gas_eth": 1.351016758e-06,
+      "gas_usd": 0.00527956307106217
+    },
+    {
+      "ts": "2025-11-02T05:01:06.718434",
+      "mode": "swap_exact_in_aero",
+      "token_in": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "token_out": "0x4200000000000000000000000000000000000006",
+      "resolved_amount_mode": "token",
+      "amount_in_raw": 8942843,
+      "min_out_raw": 2277640841620712,
+      "tick_spacing_used": 1,
+      "slippage_bps": 50,
+      "tx": "338074015215d33dea9a0443578a53370a534fa2a3abc12ca25c3f49a7befe05",
+      "gas_used": 247669,
+      "gas_limit_used": 355391,
+      "effective_gas_price_wei": 4029535,
+      "gas_eth": 9.97990903915e-07,
+      "gas_usd": 0.003897829367560424,
+      "value_at_sqrt_after_usd": 0.002289086272985641
+    },
+    {
+      "ts": "2025-11-02T05:01:43.891286",
+      "mode": "open_initial",
+      "lower_tick": -193697,
+      "upper_tick": -193360,
+      "lower_price": 3874.8514050000003,
+      "upper_price": 4007.7257850000005,
+      "tx": "b6a1a19a8491416b1a2a6dacd401f78c3d16b24a8a883f5e5195d062c6731994",
+      "gas_used": 627393,
+      "gas_limit_used": 849571,
+      "effective_gas_price_wei": 3903353,
+      "gas_eth": 2.448936348729e-06,
+      "gas_usd": 0.009566501377208119
+    },
+    {
+      "ts": "2025-11-02T05:53:48.509195",
+      "mode": "collect",
+      "tx": "fd7cfd752b196be2ab9d688869a522a99672b12fe0e3ecf4bc5322ea6b11e5b8",
+      "gas_used": 208316,
+      "gas_limit_used": 339003,
+      "effective_gas_price_wei": 2928662,
+      "gas_eth": 6.10087153192e-07,
+      "gas_usd": 0.0023778332749147097
+    },
+    {
+      "ts": "2025-11-02T05:54:26.589796",
+      "mode": "exit_pool",
+      "to": null,
+      "tx": "73ca215f7843f97afe915861418b206806b1baed97428f7cf2abed76fa402d28",
+      "gas_used": 397135,
+      "gas_limit_used": 630215,
+      "effective_gas_price_wei": 2884566,
+      "gas_eth": 1.14556211841e-06,
+      "gas_usd": 0.004467204575479582
+    },
+    {
+      "ts": "2025-11-02T05:55:04.684122",
+      "mode": "swap_exact_in_aero",
+      "token_in": "0x4200000000000000000000000000000000000006",
+      "token_out": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "resolved_amount_mode": "usd",
+      "amount_in_raw": 964349162604337,
+      "min_out_raw": 3742276,
+      "tick_spacing_used": 1,
+      "slippage_bps": 50,
+      "tx": "6dbf1f6aeac01bf81a3a7299803f660ec84afc2035d2966ebce1447f6097f0b7",
+      "gas_used": 240953,
+      "gas_limit_used": 345536,
+      "effective_gas_price_wei": 2777059,
+      "gas_eth": 6.69140697227e-07,
+      "gas_usd": 0.002609764124233842,
+      "value_at_sqrt_after_usd": 3.761082
+    },
+    {
+      "ts": "2025-11-02T05:55:42.280549",
+      "mode": "open_initial",
+      "lower_tick": -193707,
+      "upper_tick": -193562,
+      "lower_price": 3871.0598575,
+      "upper_price": 3927.6001425,
+      "tx": "0504774c559d0af8fd1715ae02f510f6cf093f1da49d607617795aff550113c2",
+      "gas_used": 578005,
+      "gas_limit_used": 792312,
+      "effective_gas_price_wei": 2734281,
+      "gas_eth": 1.580428089405e-06,
+      "gas_usd": 0.006163837177666639
+    },
+    {
+      "ts": "2025-11-02T10:08:48.874815",
+      "mode": "collect",
+      "tx": "cd58e29787338081c8c1fc4e7e4c1253abce71f35ea4570a85b9f69f91c803b2",
+      "gas_used": 277802,
+      "gas_limit_used": 452161,
+      "effective_gas_price_wei": 11364570,
+      "gas_eth": 3.15710027514e-06,
+      "gas_usd": 0.01220444221219747
+    },
+    {
+      "ts": "2025-11-02T10:09:28.258184",
+      "mode": "exit_pool",
+      "to": null,
+      "tx": "f0d194561760d511598e9c2ccc039c2658b22747f5166190faaaad33dfb78764",
+      "gas_used": 332768,
+      "gas_limit_used": 533925,
+      "effective_gas_price_wei": 11072037,
+      "gas_eth": 3.684419608416e-06,
+      "gas_usd": 0.014244940176378442
+    },
+    {
+      "ts": "2025-11-02T10:10:04.784947",
+      "mode": "swap_exact_in_aero",
+      "token_in": "0x4200000000000000000000000000000000000006",
+      "token_out": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "resolved_amount_mode": "usd",
+      "amount_in_raw": 2278071517593434,
+      "min_out_raw": 8762641,
+      "tick_spacing_used": 1,
+      "slippage_bps": 50,
+      "tx": "d9014c60bbbd734c91fe98d0c6c9b5782139731e9511525cf4036ff61cf6b623",
+      "gas_used": 256805,
+      "gas_limit_used": 358992,
+      "effective_gas_price_wei": 10795530,
+      "gas_eth": 2.77234608165e-06,
+      "gas_usd": 0.010718562919546547,
+      "value_at_sqrt_after_usd": 8.806675
+    },
+    {
+      "ts": "2025-11-02T10:10:40.277717",
+      "mode": "open_initial",
+      "lower_tick": -193976,
+      "upper_tick": -193633,
+      "lower_price": 3768.264815,
+      "upper_price": 3899.738395,
+      "tx": "5954f659a220cf5d74bec069c5bf39372ea7824be0dfa54848da2b05e391c3e2",
+      "gas_used": 648395,
+      "gas_limit_used": 893193,
+      "effective_gas_price_wei": 10917821,
+      "gas_eth": 7.079060547295e-06,
+      "gas_usd": 0.027366648344613415
+    },
+    {
+      "ts": "2025-11-02T11:10:48.622019",
+      "mode": "collect",
+      "tx": "3b3a57d4bf4527405caa81766a4cbce3364817525d0b973b76f5ae6ce24189a2",
+      "gas_used": 221996,
+      "gas_limit_used": 365293,
+      "effective_gas_price_wei": 15244144,
+      "gas_eth": 3.384138991424e-06,
+      "gas_usd": 0.013084670337144296
+    },
+    {
+      "ts": "2025-11-02T11:11:27.229175",
+      "mode": "exit_pool",
+      "to": null,
+      "tx": "267b394c39e7c1dcd38215fc276dd27ab29027190ea2eeef25a0ff0224ad1df5",
+      "gas_used": 401637,
+      "gas_limit_used": 637268,
+      "effective_gas_price_wei": 14516790,
+      "gas_eth": 5.83047998523e-06,
+      "gas_usd": 0.022545752726233007
+    },
+    {
+      "ts": "2025-11-02T11:12:02.775720",
+      "mode": "swap_exact_in_aero",
+      "token_in": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "token_out": "0x4200000000000000000000000000000000000006",
+      "resolved_amount_mode": "token",
+      "amount_in_raw": 2893330,
+      "min_out_raw": 744255383951803,
+      "tick_spacing_used": 1,
+      "slippage_bps": 50,
+      "tx": "27d5fc66c0ce8970d4ce3b89b2738c22deb10121035ab163ae455d4e981f8a2c",
+      "gas_used": 248957,
+      "gas_limit_used": 376316,
+      "effective_gas_price_wei": 13746906,
+      "gas_eth": 3.422388477042e-06,
+      "gas_usd": 0.013237120968729935,
+      "value_at_sqrt_after_usd": 0.000747995360755581
+    },
+    {
+      "ts": "2025-11-02T11:13:02.137696",
+      "mode": "open_initial",
+      "lower_tick": -193790,
+      "upper_tick": -193645,
+      "lower_price": 3839.0734525000003,
+      "upper_price": 3895.1465475,
+      "tx": "1b61cf04c0e3a29ceb79aebb6a6beea9ed8483b5d75773ca702c20d7d34eafe0",
+      "gas_used": 657717,
+      "gas_limit_used": 901897,
+      "effective_gas_price_wei": 13047983,
+      "gas_eth": 8.581880234811e-06,
+      "gas_usd": 0.03319243272275179
     }
   ],
   "collect_history": [
@@ -1114,6 +1326,34 @@
       "fees1_raw": 143,
       "fees_usd_est": 0.00028956812830324143,
       "tx": "9e46cf7eeba893f4cd45887049bc47bd910b1923928467d2617a1b9c60de59c2"
+    },
+    {
+      "ts": "2025-11-02T04:59:50.534144",
+      "fees0_raw": 1978477409805,
+      "fees1_raw": 7737,
+      "fees_usd_est": 0.015468952332435372,
+      "tx": "042b9ea01cd236434c786862179993a0c89794118e6f539290dae26e10433622"
+    },
+    {
+      "ts": "2025-11-02T05:53:48.507823",
+      "fees0_raw": 335630660478,
+      "fees1_raw": 1250,
+      "fees_usd_est": 0.002558118727309075,
+      "tx": "fd7cfd752b196be2ab9d688869a522a99672b12fe0e3ecf4bc5322ea6b11e5b8"
+    },
+    {
+      "ts": "2025-11-02T10:08:48.873407",
+      "fees0_raw": 3504047424195,
+      "fees1_raw": 13203,
+      "fees_usd_est": 0.026749836882452367,
+      "tx": "cd58e29787338081c8c1fc4e7e4c1253abce71f35ea4570a85b9f69f91c803b2"
+    },
+    {
+      "ts": "2025-11-02T11:10:48.620369",
+      "fees0_raw": 351017872125,
+      "fees1_raw": 1360,
+      "fees_usd_est": 0.002717189786260124,
+      "tx": "3b3a57d4bf4527405caa81766a4cbce3364817525d0b973b76f5ae6ce24189a2"
     }
   ],
   "deposit_history": [
@@ -1180,6 +1420,6 @@
   ],
   "vault_initial_usd": 2.0084770368710996,
   "error_history": [],
-  "last_fees_update_ts": "2025-11-01T13:29:51.019305",
+  "last_fees_update_ts": "2025-11-02T11:10:48.618625",
   "baseline_set_ts": "2025-10-31T13:47:56.906717"
 }

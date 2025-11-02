@@ -7,9 +7,9 @@ import token
 from fastapi import APIRouter, HTTPException, Body
 from web3 import Web3
 
-from ..services.exceptions import TransactionRevertedError
+from ..services.exceptions import TransactionBudgetExceededError, TransactionRevertedError
 
-from ..routes.utils import snapshot_status, tick_spacing_candidates
+from ..routes.utils import estimate_eth_usd_from_pool, snapshot_status, tick_spacing_candidates
 
 from ..domain.swap import SwapExactInRequest, SwapQuoteRequest
 from ..config import get_settings
@@ -199,73 +199,110 @@ def open_position(dex: str, alias: str, req: OpenRequest):
     # no adapter python: ad.fn_open(lower, upper)
     fn = ad.fn_open(int(lower_tick), int(upper_tick))
 
+    # limite opcional de gas em USD (exemplo: 0.02 USD máx)
+    eth_usd_hint = estimate_eth_usd_from_pool(ad)
+    max_budget_usd = req.max_budget_usd
+
     txs = TxService(v.get("rpc_url"))
     try:
         send_res = txs.send(
             fn,
             wait=True,
-            gas_strategy="buffered"  # default já é "buffered", mas deixei explícito
+            gas_strategy="buffered",
+            max_gas_usd=max_budget_usd,
+            eth_usd_hint=eth_usd_hint,
         )
-    except TransactionRevertedError as e:
-        # aqui eu devolvo um 500 com payload útil
-        # e.status code 500 força o caller a saber que NÃO foi sucesso
+    except TransactionBudgetExceededError as e:
+        payload = {
+            "tx_hash": None,
+            "broadcasted": False,
+            "status": None,
+            "error_type": "BUDGET_EXCEEDED",
+            "error_msg": "Gas cost upper bound is above allowed max_gas_usd",
+            "budget_info": {
+                "usd_budget": e.usd_budget,
+                "usd_estimated_upper_bound": e.usd_estimated,
+                "eth_usd_hint": e.eth_usd,
+                "gas_price_wei": e.gas_price_wei,
+                "est_gas_limit": e.est_gas_limit,
+            },
+        }
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "open_initial_failed_budget",
+            "payload": payload,
+        })
         raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "reverted_on_chain",
-                "tx": e.tx_hash,
-                "receipt": e.receipt,
-                "hint": "Likely out-of-gas or vault guard (cooldown/twap/allowance).",
-            }
+            status_code=400,
+            detail=payload,
+        )
+
+    except TransactionRevertedError as e:
+        rcpt = e.receipt or {}
+        gas_used = int(rcpt.get("gasUsed") or 0)
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+        gas_eth = gas_usd = None
+        if gas_used and eff_price_wei and eth_usd_hint:
+            gas_eth = float(
+                (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+            )
+            gas_usd = gas_eth * float(eth_usd_hint)
+
+        payload = {
+            "tx_hash": e.tx_hash,
+            "broadcasted": True,
+            "status": 0,
+            "error_type": "ONCHAIN_REVERT",
+            "error_msg": e.msg,
+            "receipt": rcpt,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": eff_price_wei,
+            "gas_eth": gas_eth,
+            "gas_usd": gas_usd,
+        }
+
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "open_initial_failed_revert",
+            "payload": payload,
+        })
+
+        raise HTTPException(
+            status_code=502,
+            detail=payload,
         )
         
-    tx_hash = send_res["tx_hash"]
     rcpt = send_res["receipt"] or {}
-    gas_limit_used = send_res.get("gas_limit_used")
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
 
-    gas_eth = None
-    gas_usd = None
-    if gas_used and eff_price_wei:
-        # gas em ETH
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei and eth_usd_hint:
         gas_eth = float(
             (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
         )
+        gas_usd = gas_eth * float(eth_usd_hint)
 
-        # tentar precificar ETH->USD (igual rebalance_swap logic)
-        meta2 = ad.pool_meta()
-        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
-        sym0b, sym1b = str(meta2["sym0"]).upper(), str(meta2["sym1"]).upper()
-        sqrtPb, _ = ad.slot0()
-        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
-
-        if sym1b in USD_SYMBOLS and sym0b in {"WETH", "ETH"}:
-            gas_usd = gas_eth * p_t1_t0b
-        elif sym0b in USD_SYMBOLS and sym1b in {"WETH", "ETH"}:
-            gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0 / p_t1_t0b)
-
-    # -------- snapshot after
     after = snapshot_status(ad, dex, alias)
 
-    # -------- histórico
+    # log normal de sucesso
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "open_initial",
         "lower_tick": int(lower_tick),
         "upper_tick": int(upper_tick),
-        "lower_price": float(req.lower_price) if req.lower_price is not None else None,
-        "upper_price": float(req.upper_price) if req.upper_price is not None else None,
-        "tx": tx_hash,
+        "tx": send_res["tx_hash"],
         "gas_used": gas_used,
-        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
+        "gas_budget_check": send_res.get("gas_budget_check"),
+        "send_res": send_res
     })
 
     return {
-        "tx": tx_hash,
+        "tx": send_res["tx_hash"],
         "range_used": {
             "lower_tick": int(lower_tick),
             "upper_tick": int(upper_tick),
@@ -275,13 +312,13 @@ def open_position(dex: str, alias: str, req: OpenRequest):
             "upper_price": float(req.upper_price) if req.upper_price is not None else None,
         },
         "gas_used": gas_used,
-        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
-        "effective_gas_price_gwei": (float(eff_price_wei)/1e9 if eff_price_wei else None),
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
+        "budget": send_res.get("gas_budget_check"),
         "before": before,
         "after": after,
+        "send_res": send_res
     }
 
 
@@ -443,6 +480,11 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
     
     state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    
+    # limite opcional de gas em USD (exemplo: 0.02 USD máx)
+    eth_usd_hint = estimate_eth_usd_from_pool(ad)
+    max_budget_usd = req.max_budget_usd
+    
     txs = TxService(v.get("rpc_url"))
     
     before = snapshot_status(ad, dex, alias)
@@ -454,36 +496,86 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
         fn = ad.fn_exit_withdraw(to_addr)
         
     try:
-        send_res = txs.send(fn, wait=True, gas_strategy="buffered")
-    except TransactionRevertedError as e:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "reverted_on_chain",
-                "tx": e.tx_hash,
-                "receipt": e.receipt,
-                "hint": "Likely out-of-gas or slippage/guard.",
-            }
+        send_res = txs.send(
+            fn, 
+            wait=True, 
+            gas_strategy="buffered",
+            max_gas_usd=max_budget_usd,
+            eth_usd_hint=eth_usd_hint,
         )
-    tx_hash = send_res["tx_hash"]
-    rcpt = send_res["receipt"] or {}
+    except TransactionBudgetExceededError as e:
+        # NADA foi enviado on-chain
+        payload = {
+            "tx_hash": None,
+            "broadcasted": False,
+            "status": None,
+            "error_type": "BUDGET_EXCEEDED",
+            "error_msg": "Gas cost upper bound is above allowed max_gas_usd",
+            "budget_info": {
+                "usd_budget": e.usd_budget,
+                "usd_estimated_upper_bound": e.usd_estimated,
+                "eth_usd_hint": e.eth_usd,
+                "gas_price_wei": e.gas_price_wei,
+                "est_gas_limit": e.est_gas_limit,
+            },
+        }
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "open_initial_failed_budget",
+            "payload": payload,
+        })
+        raise HTTPException(
+            status_code=400,
+            detail=payload,
+        )
 
-    gas_limit_used = send_res.get("gas_limit_used")
+    except TransactionRevertedError as e:
+        # TX FOI ENVIADA e minerada, mas revertida on-chain (status=0)
+        rcpt = e.receipt or {}
+        gas_used = int(rcpt.get("gasUsed") or 0)
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+        gas_eth = gas_usd = None
+        if gas_used and eff_price_wei and eth_usd_hint:
+            gas_eth = float(
+                (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+            )
+            gas_usd = gas_eth * float(eth_usd_hint)
+
+        payload = {
+            "tx_hash": e.tx_hash,
+            "broadcasted": True,
+            "status": 0,
+            "error_type": "ONCHAIN_REVERT",
+            "error_msg": e.msg,
+            "receipt": rcpt,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": eff_price_wei,
+            "gas_eth": gas_eth,
+            "gas_usd": gas_usd,
+        }
+
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "open_initial_failed_revert",
+            "payload": payload,
+        })
+
+        raise HTTPException(
+            status_code=502,
+            detail=payload,
+        )
+    
+    rcpt = send_res["receipt"] or {}
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
     gas_eth = gas_usd = None
-    if gas_used and eff_price_wei:
-        gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
-        # tentar converter pra USD com mesma heurística
-        meta2 = ad.pool_meta()
-        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
-        sym0b, sym1b = str(meta2["sym0"]).upper(), str(meta2["sym1"]).upper()
-        sqrtPb, _ = ad.slot0()
-        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
-        if sym1b in USD_SYMBOLS and sym0b in {"WETH","ETH"}:
-            gas_usd = gas_eth * p_t1_t0b
-        elif sym0b in USD_SYMBOLS and sym1b in {"WETH","ETH"}:
-            gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0/p_t1_t0b)
+    if gas_used and eff_price_wei and eth_usd_hint:
+        gas_eth = float(
+            (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+        )
+        gas_usd = gas_eth * float(eth_usd_hint)
 
     after = snapshot_status(ad, dex, alias)
 
@@ -491,28 +583,31 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
         "ts": datetime.utcnow().isoformat(),
         "mode": ("exit_pool" if req.mode == "pool" else "exit_all"),
         "to": txs.sender_address() if req.mode != "pool" else None,
-        "tx": tx_hash,
+        "tx": send_res["tx_hash"],
         "gas_used": gas_used,
-        "gas_limit_used": gas_limit_used,
+        "gas_used": gas_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
+        "gas_budget_check": send_res.get("gas_budget_check"),
+        "send_res": send_res
     })
 
     return {
-        "tx": tx_hash,
+        "tx": send_res["tx_hash"],
         "mode": ("exit" if req.mode == "pool" else "exit_withdraw"),
         "gas_used": gas_used,
-        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
+        "budget": send_res.get("gas_budget_check"),
         "before": before,
         "after": after,
+        "send_res": send_res
     }
 
 @router.post("/vaults/{dex}/{alias}/collect")
-def collect(dex: str, alias: str, _req: CollectRequest):
+def collect(dex: str, alias: str, req: CollectRequest):
     """
     Collect unclaimed fees to the vault.
 
@@ -584,47 +679,95 @@ def collect(dex: str, alias: str, _req: CollectRequest):
         # fallback: treat token1 as quote
         pre_fees_usd = pre_fees0 * p_t1_t0 + pre_fees1
 
+    # limite opcional de gas em USD (exemplo: 0.02 USD máx)
+    eth_usd_hint = estimate_eth_usd_from_pool(ad)
+    max_budget_usd = req.max_budget_usd
+    
     # execute tx (collectToVault)
     txs = TxService(v.get("rpc_url"))
     fn = ad.fn_collect()
     try:
-        send_res = txs.send(fn, wait=True, gas_strategy="buffered")
-    except TransactionRevertedError as e:
+        send_res = txs.send(
+            fn, 
+            wait=True, 
+            gas_strategy="buffered",
+            max_gas_usd=max_budget_usd,
+            eth_usd_hint=eth_usd_hint,
+        )
+    except TransactionBudgetExceededError as e:
+        payload = {
+            "tx_hash": None,
+            "broadcasted": False,
+            "status": None,
+            "error_type": "BUDGET_EXCEEDED",
+            "error_msg": "Gas cost upper bound is above allowed max_gas_usd",
+            "budget_info": {
+                "usd_budget": e.usd_budget,
+                "usd_estimated_upper_bound": e.usd_estimated,
+                "eth_usd_hint": e.eth_usd,
+                "gas_price_wei": e.gas_price_wei,
+                "est_gas_limit": e.est_gas_limit,
+            },
+        }
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "open_initial_failed_budget",
+            "payload": payload,
+        })
         raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "reverted_on_chain",
-                "tx": e.tx_hash,
-                "receipt": e.receipt,
-                "hint": "Likely out-of-gas or slippage/guard.",
-            }
+            status_code=400,
+            detail=payload,
+        )
+
+    except TransactionRevertedError as e:
+        rcpt = e.receipt or {}
+        gas_used = int(rcpt.get("gasUsed") or 0)
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+        gas_eth = gas_usd = None
+        if gas_used and eff_price_wei and eth_usd_hint:
+            gas_eth = float(
+                (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+            )
+            gas_usd = gas_eth * float(eth_usd_hint)
+
+        payload = {
+            "tx_hash": e.tx_hash,
+            "broadcasted": True,
+            "status": 0,
+            "error_type": "ONCHAIN_REVERT",
+            "error_msg": e.msg,
+            "receipt": rcpt,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": eff_price_wei,
+            "gas_eth": gas_eth,
+            "gas_usd": gas_usd,
+        }
+
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "open_initial_failed_revert",
+            "payload": payload,
+        })
+
+        raise HTTPException(
+            status_code=502,
+            detail=payload,
         )
         
-    tx_hash = send_res["tx_hash"]
     rcpt = send_res["receipt"] or {}
-
-    gas_limit_used = send_res.get("gas_limit_used")
-
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
 
-    gas_eth = None
-    gas_usd = None
-    if gas_used and eff_price_wei:
-        gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
-        # tentar converter ETH→USD usando mesma heurística que swap usa
-        meta2 = ad.pool_meta()
-        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
-        sym0b, sym1b = str(meta2["sym0"]).upper(), str(meta2["sym1"]).upper()
-        sqrtPb, _ = ad.slot0()
-        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
-        # se par é [ETH,USDC] ou [USDC,ETH] a gente estima gas_usd
-        if sym1b in USD_SYMBOLS and sym0b in {"WETH","ETH"}:
-            gas_usd = gas_eth * p_t1_t0b
-        elif sym0b in USD_SYMBOLS and sym1b in {"WETH","ETH"}:
-            gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0/p_t1_t0b)
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei and eth_usd_hint:
+        gas_eth = float(
+            (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+        )
+        gas_usd = gas_eth * float(eth_usd_hint)
+
+    after = snapshot_status(ad, dex, alias)
             
-    # --- persist snapshot and history (using *preview* values)
     state_repo.add_collected_fees_snapshot(
         dex, alias,
         fees0_raw=int(fees0_raw),
@@ -636,35 +779,37 @@ def collect(dex: str, alias: str, _req: CollectRequest):
         "fees0_raw": int(fees0_raw),
         "fees1_raw": int(fees1_raw),
         "fees_usd_est": float(pre_fees_usd),
-        "tx": tx_hash
+        "tx": send_res["tx_hash"],
     })
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "collect",
-        "tx": tx_hash,
+        "tx": send_res["tx_hash"],
         "gas_used": gas_used,
-        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
+        "gas_budget_check": send_res.get("gas_budget_check"),
+        "send_res": send_res
     })
 
     after = snapshot_status(ad, dex, alias)
 
     return {
-        "tx": tx_hash,
-        "gas_used": gas_used,
-        "gas_limit_used": gas_limit_used,
-        "effective_gas_price_wei": eff_price_wei,
-        "gas_eth": gas_eth,
-        "gas_usd": gas_usd,
+        "tx": send_res["tx_hash"],
         "collected_preview": {
             "token0": pre_fees0,
             "token1": pre_fees1,
             "usd_est": float(pre_fees_usd),
         },
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "budget": send_res.get("gas_budget_check"),
         "before": before,
         "after": after,
+        "send_res": send_res
     }
 
 @router.post("/vaults/{dex}/{alias}/deposit")
@@ -1370,51 +1515,91 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
         sqrt_price_limit_x96=int(req.sqrt_price_limit_x96 or 0),
     )
 
+    # limite opcional de gas em USD (exemplo: 0.02 USD máx)
+    eth_usd_hint = estimate_eth_usd_from_pool(ad)
+    max_budget_usd = req.max_budget_usd
+
     txs = TxService(v.get("rpc_url"))
     try:
-        send_res = txs.send(fn, wait=True, gas_strategy="buffered")
-    except TransactionRevertedError as e:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "reverted_on_chain",
-                "tx": e.tx_hash,
-                "receipt": e.receipt,
-                "hint": "Likely out-of-gas or slippage/guard.",
-            }
+        send_res = txs.send(
+            fn, 
+            wait=True, 
+            gas_strategy="buffered",
+            max_gas_usd=max_budget_usd,
+            eth_usd_hint=eth_usd_hint,
         )
-        
-    tx_hash = send_res["tx_hash"]
+    except TransactionBudgetExceededError as e:
+        payload = {
+            "tx_hash": None,
+            "broadcasted": False,
+            "status": None,
+            "error_type": "BUDGET_EXCEEDED",
+            "error_msg": "Gas cost upper bound is above allowed max_gas_usd",
+            "budget_info": {
+                "usd_budget": e.usd_budget,
+                "usd_estimated_upper_bound": e.usd_estimated,
+                "eth_usd_hint": e.eth_usd,
+                "gas_price_wei": e.gas_price_wei,
+                "est_gas_limit": e.est_gas_limit,
+            },
+        }
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "open_initial_failed_budget",
+            "payload": payload,
+        })
+        raise HTTPException(
+            status_code=400,
+            detail=payload,
+        )
+
+    except TransactionRevertedError as e:
+        rcpt = e.receipt or {}
+        gas_used = int(rcpt.get("gasUsed") or 0)
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+        gas_eth = gas_usd = None
+        if gas_used and eff_price_wei and eth_usd_hint:
+            gas_eth = float(
+                (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+            )
+            gas_usd = gas_eth * float(eth_usd_hint)
+
+        payload = {
+            "tx_hash": e.tx_hash,
+            "broadcasted": True,
+            "status": 0,
+            "error_type": "ONCHAIN_REVERT",
+            "error_msg": e.msg,
+            "receipt": rcpt,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": eff_price_wei,
+            "gas_eth": gas_eth,
+            "gas_usd": gas_usd,
+        }
+
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "open_initial_failed_revert",
+            "payload": payload,
+        })
+
+        raise HTTPException(
+            status_code=502,
+            detail=payload,
+        )
+
     rcpt = send_res["receipt"] or {}
-
-    gas_limit_used = send_res.get("gas_limit_used")
-
     gas_used = int(rcpt.get("gasUsed") or 0)
     eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
-    
-    gas_eth = None
-    gas_usd = None
-    if gas_used and eff_price_wei:
+
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei and eth_usd_hint:
         gas_eth = float(
             (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
         )
-        meta2 = ad.pool_meta()
-        sym0b = str(meta2["sym0"]).upper()
-        sym1b = str(meta2["sym1"]).upper()
-        dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
-        sqrtPb, _ = ad.slot0()
-        p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+        gas_usd = gas_eth * float(eth_usd_hint)
 
-        if sym1b in USD_SYMBOLS and sym0b in {"WETH", "ETH"}:
-            # token0 é ETH, token1 é USD-ish -> p_t1_t0b = USDC per ETH
-            gas_usd = gas_eth * p_t1_t0b
-        elif sym0b in USD_SYMBOLS and sym1b in {"WETH", "ETH"}:
-            # token0 é USD-ish, token1 é ETH -> invertido
-            gas_usd = gas_eth * (
-                0 if p_t1_t0b == 0 else 1.0 / p_t1_t0b
-            )
-
-    # snapshot AFTER
     after = snapshot_status(ad, dex, alias)
 
     # histórico
@@ -1428,31 +1613,30 @@ def aero_swap_exact_in(alias: str, req: SwapExactInRequest):
         "min_out_raw": min_out_raw,
         "tick_spacing_used": ts_used,
         "slippage_bps": bps,
-        "tx": tx_hash,
+        "tx": send_res["tx_hash"],
         "gas_used": gas_used,
-        "gas_limit_used": gas_limit_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
+        "gas_budget_check": send_res.get("gas_budget_check"),
+        "send_res": send_res,
         "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
     })
 
     return {
-        "tx": tx_hash,
+        "tx": send_res["tx_hash"],
         "tick_spacing_used": ts_used,
         "resolved_amount_mode": resolved_mode,   # "token" ou "usd"
         "amount_in_raw": amount_in_raw,
         "quoted_out_raw": amount_out_raw,
         "min_out_raw": min_out_raw,
-        "gas_used": gas_used,
-        "gas_limit_used": gas_limit_used,
+        "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
+         "gas_used": gas_used,
         "effective_gas_price_wei": eff_price_wei,
-        "effective_gas_price_gwei": (
-            float(eff_price_wei) / 1e9 if eff_price_wei else None
-        ),
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
-        "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
+        "budget": send_res.get("gas_budget_check"),
         "before": before,
         "after": after,
+        "send_res": send_res
     }

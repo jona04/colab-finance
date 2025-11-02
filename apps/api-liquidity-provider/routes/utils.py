@@ -1,7 +1,7 @@
 
 
 from ..domain.models import StatusCore
-from ..services.chain_reader import compute_status
+from ..services.chain_reader import USD_SYMBOLS, compute_status, sqrtPriceX96_to_price_t1_per_t0
 from ..adapters.aerodrome import AerodromeAdapter
 from ..config import get_settings
 
@@ -72,3 +72,25 @@ def snapshot_status(adapter, dex: str, alias: str) -> dict:
             "baseline_usd": core.usd_panel.baseline_usd,
         },
     }
+    
+def estimate_eth_usd_from_pool(ad) -> float | None:
+    """
+    Best-effort ETH/USD using current vault pool.
+    Returns None if we can't infer.
+    """
+    meta2 = ad.pool_meta()
+    dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
+    sym0b = str(meta2["sym0"]).upper()
+    sym1b = str(meta2["sym1"]).upper()
+    sqrtPb, _ = ad.slot0()
+    p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
+
+    # se token0=ETH e token1=USDC, p_t1_t0b = USDC per ETH
+    if sym0b in {"WETH","ETH"} and sym1b in USD_SYMBOLS:
+        return float(p_t1_t0b)
+
+    # se token0=USDC e token1=ETH, então invertido
+    if sym1b in {"WETH","ETH"} and sym0b in USD_SYMBOLS:
+        return float(0 if p_t1_t0b == 0 else 1.0/p_t1_t0b)
+
+    return None

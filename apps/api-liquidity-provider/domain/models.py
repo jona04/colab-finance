@@ -46,6 +46,7 @@ class OpenRequest(BaseModel):
     lower_price: Optional[float] = None  # alvo p_t1_t0 para bound inferior
     upper_price: Optional[float] = None  # alvo p_t1_t0 para bound superior
 
+    max_budget_usd: Optional[float] = None
 
 class RebalanceRequest(BaseModel):
     # modo ticks
@@ -63,7 +64,8 @@ class RebalanceRequest(BaseModel):
 class WithdrawRequest(BaseModel):
     alias: str
     mode: Literal["pool", "all"]
-
+    max_budget_usd: Optional[float] = None
+    
 class DepositRequest(BaseModel):
     alias: str
     token: str
@@ -71,6 +73,7 @@ class DepositRequest(BaseModel):
 
 class CollectRequest(BaseModel):
     alias: str
+    max_budget_usd: Optional[float] = None
 
 class BaselineRequest(BaseModel):
     alias: str

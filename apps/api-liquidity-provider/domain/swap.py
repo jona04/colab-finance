@@ -18,3 +18,4 @@ class SwapExactInRequest(BaseModel):
     fee: Optional[int] = None
     sqrt_price_limit_x96: Optional[int] = None
     slippage_bps: int = 50
+    max_budget_usd: Optional[float] = None
