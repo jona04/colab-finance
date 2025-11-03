@@ -4,11 +4,12 @@ class TransactionRevertedError(Exception):
     Raised when the tx was actually sent on-chain, mined, and status == 0.
     You ALREADY paid gas, the chain executed and reverted.
     """
-    def __init__(self, tx_hash: str, receipt: dict, msg: str):
+    def __init__(self, tx_hash: str, receipt: dict, msg: str, budget_block: dict):
         super().__init__(msg)
         self.tx_hash = tx_hash
         self.receipt = receipt
         self.msg = msg
+        self.budget_block = budget_block
 
 
 class TransactionBudgetExceededError(Exception):

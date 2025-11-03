@@ -4,6 +4,8 @@ from web3 import Web3
 from web3.contract.contract import ContractFunction
 from eth_account import Account
 
+from ..services.utils import to_json_safe
+
 from ..config import get_settings
 from .exceptions import (
     TransactionRevertedError,
@@ -198,7 +200,7 @@ class TxService:
 
         if not wait:
             # not mined yet, we just return intent + budget info
-            return {
+            raw_resp = {
                 "tx_hash": tx_hash,
                 "broadcasted": True,
                 "receipt": None,
@@ -207,22 +209,22 @@ class TxService:
                 "gas_price_wei": gas_price_wei,
                 "gas_budget_check": budget_block,
             }
+            return to_json_safe(raw_resp)
 
         # 6) Wait for mining
         rcpt = self._wait_receipt(tx_hash)
         status = int(rcpt.get("status", 0))
 
         if status == 0:
-            # chain revertou, você JÁ gastou gas.
-            # Lança exceção, mas inclui os dados pra logar.
             raise TransactionRevertedError(
                 tx_hash=tx_hash,
-                receipt=rcpt,
-                msg="Transaction reverted (status=0). Possibly out-of-gas or require() failed"
+                receipt=to_json_safe(rcpt),
+                msg="Transaction reverted (status=0). Possibly out-of-gas or require() failed",
+                budget_block=budget_block
             )
 
         # 7) OK
-        return {
+        raw_resp = {
             "tx_hash": tx_hash,
             "broadcasted": True,
             "receipt": rcpt,
@@ -231,6 +233,7 @@ class TxService:
             "gas_price_wei": gas_price_wei,
             "gas_budget_check": budget_block,
         }
+        return to_json_safe(raw_resp)
 
     def deploy(
         self,
@@ -315,7 +318,7 @@ class TxService:
         tx_hash = txh.hex()
 
         if not wait:
-            return {
+            raw_resp = {
                 "tx": tx_hash,
                 "address": None,
                 "status": None,
@@ -323,6 +326,7 @@ class TxService:
                 "gas_price_wei": gas_price_wei,
                 "gas_budget_check": budget_block,
             }
+            return to_json_safe(raw_resp)
 
         rcpt = dict(self.w3.eth.wait_for_transaction_receipt(txh))
         status = int(rcpt.get("status", 0))
@@ -330,11 +334,12 @@ class TxService:
         if status == 0:
             raise TransactionRevertedError(
                 tx_hash=tx_hash,
-                receipt=rcpt,
-                msg="Deploy reverted (status=0)"
+                receipt=to_json_safe(rcpt),
+                msg="Deploy reverted (status=0)",
+                budget_block=budget_block
             )
 
-        return {
+        raw_resp = {
             "tx": tx_hash,
             "address": rcpt["contractAddress"],
             "status": status,
@@ -342,3 +347,4 @@ class TxService:
             "gas_price_wei": gas_price_wei,
             "gas_budget_check": budget_block,
         }
+        return to_json_safe(raw_resp)

@@ -20,6 +20,7 @@ from ..domain.models import (
     HoldingsSide, HoldingsMeta, HoldingsBlock,
     FeesUncollected, StatusCore, FeesCollectedCum
 )
+from web3 import Web3
 
 getcontext().prec = 80
 Q96 = Decimal(2) ** 96
@@ -88,7 +89,7 @@ def _value_usd(
     # fallback: trata token1 como quote
     return amt0_h * p_t1_t0 + amt1_h
 
-def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
+def compute_status(adapter, dex, alias: str) -> StatusCore:
     """
     Build a full "status" model from on-chain reads.
 
@@ -129,6 +130,49 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
     is_staked = bool(vstate.get("staked", False))
     token_id = int(vstate.get("tokenId", 0) or 0)
 
+    gauge_rewards_block = None
+
+    if has_gauge and token_id != 0 and is_staked:
+        try:
+            gauge = adapter.gauge_contract()
+
+            adapter_onchain_addr = adapter.adapter_address()  # vamos adicionar isso (ver item 4)
+
+            pending_raw = gauge.functions.earned(
+                Web3.to_checksum_address(adapter_onchain_addr),
+                token_id
+            ).call()
+
+            reward_token_addr = gauge.functions.rewardToken().call()
+
+            erc20 = adapter.erc20_contract()
+
+            reward_symbol = erc20.functions.symbol().call()
+            reward_dec    = erc20.functions.decimals().call()
+
+            pending_human = float(pending_raw) / (10 ** reward_dec)
+
+            # tentativa de "usd_est": se reward é estável tipo USDC, trata 1:1
+            usd_est = None
+            if reward_symbol.upper() in USD_SYMBOLS or _is_stable_addr(reward_token_addr):
+                usd_est = pending_human
+            # se for AERO/WETH etc, você pode deixar None agora e calcular depois
+
+            gauge_rewards_block = {
+                "reward_token": reward_token_addr,
+                "reward_symbol": reward_symbol,
+                "pending_raw": int(pending_raw),
+                "pending_amount": pending_human,
+                "pending_usd_est": (float(usd_est) if usd_est is not None else None),
+            }
+
+        except Exception as e:
+            gauge_rewards_block = {
+                "error": f"gauge_read_failed: {str(e)}"
+            }
+    else:
+        gauge_rewards_block = None
+        
     # position location
     if token_id == 0:
         position_location = "none"
@@ -249,4 +293,5 @@ def compute_status(adapter: UniswapV3Adapter, dex, alias: str) -> StatusCore:
         gauge=gauge_addr,
         staked=is_staked,
         position_location=position_location,
+        gauge_rewards=gauge_rewards_block,
     )

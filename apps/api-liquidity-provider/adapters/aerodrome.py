@@ -107,6 +107,10 @@ class AerodromeAdapter(DexAdapter):
     def nfpm_contract(self):
         return self.w3.eth.contract(address=Web3.to_checksum_address(self.nfpm), abi=self.nfpm_abi()) if self.nfpm else None
 
+    def erc20_contract(self):
+        reward_token_addr = self.gauge_contract().functions.rewardToken().call()
+        return self.w3.eth.contract(address=Web3.to_checksum_address(reward_token_addr), abi=self.erc20_abi())
+        
     def factory_contract(self):
         addr = Web3.to_checksum_address(os.getenv("AERODROME_POOL_FACTORY", "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"))
         return self.w3.eth.contract(address=addr, abi=self.factory_abi())
