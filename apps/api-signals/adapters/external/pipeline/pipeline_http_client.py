@@ -183,3 +183,41 @@ class PipelineHttpClient:
         except Exception as exc:
             self._logger.exception("post_open error for %s: %s", url, exc)
         return None
+    
+    async def post_unstake(self, dex: str, alias: str) -> Optional[Dict[str, Any]]:
+        """
+        POST /api/vaults/{dex}/{alias}/unstake
+        body: {}
+        """
+        url = f"{self._base_url}/api/vaults/{dex}/{alias}/unstake"
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                r = await client.post(url, json={})
+                if r.status_code == 200:
+                    return r.json()
+                self._logger.warning("unstake non-200 %s: %s %s", url, r.status_code, r.text)
+        except Exception as exc:
+            self._logger.exception("post_unstake error for %s: %s", url, exc)
+        return None
+
+    async def post_stake(
+        self,
+        dex: str,
+        alias: str,
+        token_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        POST /api/vaults/{dex}/{alias}/stake
+        body: { "token_id": int|null }
+        """
+        url = f"{self._base_url}/api/vaults/{dex}/{alias}/stake"
+        payload = {"token_id": token_id}
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                r = await client.post(url, json=payload)
+                if r.status_code == 200:
+                    return r.json()
+                self._logger.warning("stake non-200 %s: %s %s", url, r.status_code, r.text)
+        except Exception as exc:
+            self._logger.exception("post_stake error for %s: %s", url, exc)
+        return None

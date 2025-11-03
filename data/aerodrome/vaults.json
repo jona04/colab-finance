@@ -1,5 +1,5 @@
 {
-  "active": "api3",
+  "active": "api5",
   "vaults": {
     "vault1": {
       "address": "0xef3aEE5DDf4655341931E69d2f0026dDb986539C",
@@ -67,6 +67,24 @@
     "api3": {
       "address": "0x317bc723De1b3b9171295f1FB0b419A469f974b0",
       "adapter": "0x0962010A3a22cCC5d318Ffeebb8f46d655cB03eB",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+      "rpc_url": "https://base-mainnet.infura.io/v3/079d35a3c196469191c9accc1d68d25b",
+      "version": "v2"
+    },
+    "api4": {
+      "address": "0xc26CAA7E6c3afCFE8a05f4604DE03B96D058D3a3",
+      "adapter": "0xa5E0078339ead0cAeF684E566bCce2863c2a9Bbc",
+      "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
+      "nfpm": "0x827922686190790b37229fd06084350E74485b72",
+      "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
+      "rpc_url": "https://base-mainnet.infura.io/v3/079d35a3c196469191c9accc1d68d25b",
+      "version": "v2"
+    },
+    "api5": {
+      "address": "0xd32d5B2A76a3047B206051911f9CE1CeE205564C",
+      "adapter": "0x4b109E65E3F2E60a1B607F00A13BeA66ce97be88",
       "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1",
       "nfpm": "0x827922686190790b37229fd06084350E74485b72",
       "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",

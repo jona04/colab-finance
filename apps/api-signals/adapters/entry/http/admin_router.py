@@ -112,6 +112,9 @@ class StrategyParamsDTO(BaseModel):
     token0_address: Optional[str] = Field(None, description="address token0 do par/vault")
     token1_address: Optional[str] = Field(None, description="address token1 do par/vault")
     
+    # ===== gauge / staking =====
+    gauge_flow_enabled: bool = Field(False, description="Se true, usa fluxo UNSTAKE→WITHDRAW→SWAP→OPEN→STAKE")
+    
 class StrategyCreateDTO(BaseModel):
     name: str = Field(..., examples=["eth_range_v1"])
     symbol: str = Field(..., examples=["ETHUSDT"])

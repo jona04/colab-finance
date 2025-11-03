@@ -46,6 +46,8 @@ class StrategyReconcilerService:
         dex = desired.get("dex")
         alias = desired.get("alias")
 
+        gauge_flow = bool(desired.get("gauge_flow_enabled"))
+        
         # pull live vault status so we know if position exists / is aligned
         lp_status = None
         if dex and alias:
@@ -67,6 +69,9 @@ class StrategyReconcilerService:
                         },
                     }
                 ]
+                if gauge_flow:
+                    steps.append({"action": "STAKE", "payload": {"dex": dex, "alias": alias}})
+                    
             else:
                 # não temos dex/alias => não tem infra. Registrar intenção apenas.
                 steps = [
@@ -135,55 +140,33 @@ class StrategyReconcilerService:
         If dex/alias is missing, we can't actually call vault API, so fall back to NOOP.
         """
         steps: List[Dict] = []
-
+        gauge_flow = bool(desired.get("gauge_flow_enabled"))
+        
         if dex and alias:
-            steps.append({
-                "action": "COLLECT",
-                "payload": {
-                    "dex": dex,
-                    "alias": alias,
-                },
-            })
-            steps.append({
-                "action": "WITHDRAW",
-                "payload": {
-                    "dex": dex,
-                    "alias": alias,
-                    "mode": "pool",  # always withdraw LP liquidity back to idle balance
-                },
-            })
-            steps.append({
-                "action": "SWAP_EXACT_IN",
-                "payload": {
-                    "dex": dex,
-                    "alias": alias,
-                    "lower_price": Pa_des, # nao é usado no payload, mas para calcular swap
-                    "upper_price": Pb_des, # nao é usado no payload, mas para calcular swap
-                },
-            })
-            steps.append({
-                "action": "OPEN",
-                "payload": {
-                    "dex": dex,
-                    "alias": alias,
-                    "lower_price": Pa_des,
-                    "upper_price": Pb_des,
-                    # ticks decided at runtime
-                },
-            })
+            if gauge_flow:
+                # fluxo com gauge
+                steps.append({"action": "UNSTAKE", "payload": {"dex": dex, "alias": alias}})
+                steps.append({"action": "WITHDRAW", "payload": {"dex": dex, "alias": alias, "mode": "pool"}})
+                steps.append({"action": "SWAP_EXACT_IN", "payload": {"dex": dex, "alias": alias,
+                                                                     "lower_price": Pa_des, "upper_price": Pb_des}})
+                steps.append({"action": "OPEN", "payload": {"dex": dex, "alias": alias,
+                                                            "lower_price": Pa_des, "upper_price": Pb_des}})
+                steps.append({"action": "STAKE", "payload": {"dex": dex, "alias": alias}})
+            else:
+                # fluxo sem gauge (mantém COLLECT como antes)
+                steps.append({"action": "COLLECT", "payload": {"dex": dex, "alias": alias}})
+                steps.append({"action": "WITHDRAW", "payload": {"dex": dex, "alias": alias, "mode": "pool"}})
+                steps.append({"action": "SWAP_EXACT_IN", "payload": {"dex": dex, "alias": alias,
+                                                                     "lower_price": Pa_des, "upper_price": Pb_des}})
+                steps.append({"action": "OPEN", "payload": {"dex": dex, "alias": alias,
+                                                            "lower_price": Pa_des, "upper_price": Pb_des}})
         else:
-            steps.append({
-                "action": "NOOP_LEGACY",
-                "payload": {
-                    "reason": reason,
-                    "lower_price": Pa_des,
-                    "upper_price": Pb_des,
-                },
-            })
+            steps.append({"action": "NOOP_LEGACY", "payload": {
+                "reason": reason, "lower_price": Pa_des, "upper_price": Pb_des}})
 
         return {
             "strategy_id": strategy_id,
-            "signal_type": "ROTATE_RANGE",
+            "signal_type": "ROTATE_RANGE" if gauge_flow else "ROTATE_RANGE",
             "steps": steps,
             "episode": desired,
             "symbol": symbol,

@@ -170,7 +170,30 @@ class ExecuteSignalPipelineUseCase:
                                 "info": "NOOP_LEGACY executed",
                             },
                         )
-                        
+                    
+                    elif action == "UNSTAKE":
+                        # só desestaca se status indica que há gauge e está staked
+                        st = await self._lp.get_status(dex, alias)
+                        if not st:
+                            raise RuntimeError("status_unavailable_before_unstake")
+
+                        if bool(st.get("has_gauge")) and (st.get("staked") or st.get("position_location") == "gauge"):
+                            res = await self._lp.post_unstake(dex, alias)
+                            await self._append_log(episode_id, {
+                                "step": action, "phase": "unstake_call",
+                                "attempt": attempt + 1, "request": {"dex": dex, "alias": alias},
+                                "response": res,
+                            })
+                            if res is None:
+                                raise RuntimeError("unstake_failed")
+                        else:
+                            await self._append_log(episode_id, {
+                                "step": action, "phase": "skip_no_stake",
+                                "attempt": attempt + 1,
+                                "reason": "no gauge or already unstaked",
+                            })
+                        success = True
+                    
                     elif action == "COLLECT":
                         st = await self._lp.get_status(dex, alias)
                         if not st:
@@ -372,8 +395,7 @@ class ExecuteSignalPipelineUseCase:
                                     raise RuntimeError("swap_failed")
 
                                 success = True
-                            
-                            
+                                                 
                     elif action == "OPEN":
                         # Antes de abrir nova faixa, snapshot de idle caps atuais
                         st2 = await self._lp.get_status(dex, alias)
@@ -431,6 +453,31 @@ class ExecuteSignalPipelineUseCase:
 
                         if res is None:
                             raise RuntimeError("open_failed")
+                        success = True
+                    
+                    elif action == "STAKE":
+                        # estaca somente se existir gauge e a posição estiver no pool (não-gauge)
+                        st = await self._lp.get_status(dex, alias)
+                        if not st:
+                            raise RuntimeError("status_unavailable_before_stake")
+
+                        if bool(st.get("has_gauge")) and (st.get("position_location") != "gauge"):
+                            # token_id é opcional; o provider pode resolver internamente
+                            token_id = step.get("payload", {}).get("token_id")
+                            res = await self._lp.post_stake(dex, alias, token_id=token_id)
+                            await self._append_log(episode_id, {
+                                "step": action, "phase": "stake_call",
+                                "attempt": attempt + 1, "request": {"token_id": token_id},
+                                "response": res,
+                            })
+                            if res is None:
+                                raise RuntimeError("stake_failed")
+                        else:
+                            await self._append_log(episode_id, {
+                                "step": action, "phase": "skip_no_gauge",
+                                "attempt": attempt + 1,
+                                "reason": "no gauge or already staked",
+                            })
                         success = True
 
                     else:
