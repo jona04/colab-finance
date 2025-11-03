@@ -146,6 +146,7 @@ class StatusCore(BaseModel):
     cooldown_remaining_seconds: int
     cooldown_active: bool
     prices: PricesPanel
+    gauge_rewards: Optional[dict]
     fees_uncollected: FeesUncollected
     fees_collected_cum: FeesCollectedCum
     out_of_range: bool
@@ -160,8 +161,7 @@ class StatusCore(BaseModel):
     gauge: Optional[str] = None
     staked: Optional[bool] = None
     position_location: Literal["none", "pool", "gauge"] = "none"
-    
-    gauge_rewards: Optional[dict]
+
 
 # Resposta completa do endpoint
 class StatusResponse(StatusCore):

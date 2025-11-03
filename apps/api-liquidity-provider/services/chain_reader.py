@@ -280,6 +280,7 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
         cooldown_remaining_seconds=cooldown_remaining_seconds,
         cooldown_active=cooldown_active,
         prices=prices_panel,
+        gauge_rewards=gauge_rewards_block,
         fees_uncollected=fees_uncollected,
         fees_collected_cum=fees_collected_cum,
         out_of_range=out_of_range,
@@ -292,6 +293,5 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
         has_gauge=has_gauge,
         gauge=gauge_addr,
         staked=is_staked,
-        position_location=position_location,
-        gauge_rewards=gauge_rewards_block,
+        position_location=position_location
     )
