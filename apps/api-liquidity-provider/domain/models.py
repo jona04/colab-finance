@@ -147,6 +147,7 @@ class StatusCore(BaseModel):
     cooldown_active: bool
     prices: PricesPanel
     gauge_rewards: Optional[dict]
+    gauge_reward_balances: Optional[dict] = None
     fees_uncollected: FeesUncollected
     fees_collected_cum: FeesCollectedCum
     out_of_range: bool
@@ -178,10 +179,12 @@ class StatusResponse(StatusCore):
 class StakeRequest(BaseModel):
     """Stake the current or a specific position tokenId into the gauge."""
     token_id: Optional[int] = Field(default=None, description="If omitted, uses vault.positionTokenId()")
+    max_budget_usd: Optional[float] = None
 
 class UnstakeRequest(BaseModel):
     """Unstake a specific (or the current) position tokenId from the gauge."""
     token_id: Optional[int] = Field(default=None, description="If omitted, uses vault.positionTokenId()")
+    max_budget_usd: Optional[float] = None
 
 class ClaimRewardsRequest(BaseModel):
     """
@@ -192,3 +195,4 @@ class ClaimRewardsRequest(BaseModel):
     mode: Literal["tokenId", "account"] = "tokenId"
     token_id: Optional[int] = None
     account: Optional[str] = None
+    max_budget_usd: Optional[float] = None

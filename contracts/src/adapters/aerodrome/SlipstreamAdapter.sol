@@ -19,28 +19,27 @@ import "./interfaces/ISlipstreamGauge.sol";
 contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
     using SafeERC20 for IERC20;
 
+    // immutable protocol addresses
     address public immutable override pool;
     address public immutable override nfpm;
-    address public immutable override gauge; // opcional; pode ser zero
+    address public immutable override gauge; // can be zero if no staking
 
-    // --- guard params (copiados do V1 para manter comportamento) ---
+    // vault state
+    mapping(address => uint256) private _tokenId;
+    mapping(address => uint256) public lastRebalance;
+
+    // config params
     uint256 public minCooldown = 1 minutes;
     int24   public minWidth    = 5;
     int24   public maxWidth    = 900_000;
-    int24   public maxTwapDeviationTicks = 50; // ~0.5%
+    int24   public maxTwapDeviationTicks = 50;
     uint32  public twapWindow  = 60;
-
-    // vault => lastRebalance
-    mapping(address => uint256) public lastRebalance;
-
-    // vault => tokenId (NFT É mantido pelo ADAPTER)
-    mapping(address => uint256) private _tokenId;
 
     constructor(address _pool, address _nfpm, address _gauge) {
         require(_pool != address(0) && _nfpm != address(0), "zero");
         pool = _pool;
         nfpm = _nfpm;
-        gauge = _gauge; // can be 0x0 if you don't want staking
+        gauge = _gauge;
     }
 
     function onERC721Received(
@@ -52,17 +51,18 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
         return IERC721Receiver.onERC721Received.selector;
     }
 
+    // --- View helpers ---
+    function tokens() public view override returns (address token0, address token1) {
+        token0 = ISlipstreamPool(pool).token0();
+        token1 = ISlipstreamPool(pool).token1();
+    }
+
     function tickSpacing() external view override returns (int24) {
         return ISlipstreamPool(pool).tickSpacing();
     }
 
     function slot0() external view override returns (uint160 sqrtPriceX96, int24 tick) {
         (sqrtPriceX96, tick,,,,) = ISlipstreamPool(pool).slot0();
-    }
-
-    function tokens() public view override returns (address token0, address token1) {
-        token0 = ISlipstreamPool(pool).token0();
-        token1 = ISlipstreamPool(pool).token1();
     }
 
     function currentTokenId(address vault) public view override returns (uint256) {
@@ -81,8 +81,7 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
     }
 
 
-    // ===== internals =====
-
+    // --- internal ---
     function _approveIfNeeded(address token, address spender, uint256 amount) internal {
         if (amount == 0) return;
         uint256 allowance = IERC20(token).allowance(address(this), spender);
@@ -97,8 +96,13 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
         return ISlipstreamGauge(gauge).stakedContains(address(this), tokenId);
     }
 
-    // ===== mutations (IConcentratedLiquidityAdapter) =====
+    // ================================================================
+    // =============== MAIN LOGIC =====================================
+    // ================================================================
 
+    /**
+     * @notice Opens the initial LP position. NFT is held by adapter.
+     */
     function openInitialPosition(
         address vault,
         int24 tickLower,
@@ -107,21 +111,17 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
         require(_tokenId[vault] == 0, "already opened");
 
         (address token0, address token1) = tokens();
-
-        // Saldos no VAULT
         uint256 a0 = IERC20(token0).balanceOf(vault);
         uint256 a1 = IERC20(token1).balanceOf(vault);
         require(a0 > 0 || a1 > 0, "no funds");
 
-        // Puxa tokens do VAULT -> ADAPTER (Vault deve ter aprovado o adapter)
+        // pull tokens from vault
         if (a0 > 0) IERC20(token0).safeTransferFrom(vault, address(this), a0);
         if (a1 > 0) IERC20(token1).safeTransferFrom(vault, address(this), a1);
 
-        // Aprova NFPM
         _approveIfNeeded(token0, nfpm, a0);
         _approveIfNeeded(token1, nfpm, a1);
 
-        // Mint — NFT fica no ADAPTER
         ISlipstreamNFPM.MintParams memory p = ISlipstreamNFPM.MintParams({
             token0: token0,
             token1: token1,
@@ -134,13 +134,13 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
             amount1Min: 0,
             recipient: address(this),
             deadline: block.timestamp,
-            sqrtPriceX96: 0 // 0 = sem init-price; exige pool inicializado
+            sqrtPriceX96: 0
         });
 
         (tokenId, liquidity,,) = ISlipstreamNFPM(nfpm).mint(p);
         _tokenId[vault] = tokenId;
 
-        // Devolve sobras para o VAULT
+        // return leftovers to vault
         uint256 r0 = IERC20(token0).balanceOf(address(this));
         uint256 r1 = IERC20(token1).balanceOf(address(this));
         if (r0 > 0) IERC20(token0).safeTransfer(vault, r0);
@@ -149,6 +149,59 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
         lastRebalance[vault] = block.timestamp;
     }
 
+    /**
+     * @notice Claim gauge rewards and forward them to vault.
+     */
+    function claimRewards(address vault) public override {
+        if (gauge == address(0)) return;
+        uint256 tokenId = _tokenId[vault];
+        if (tokenId == 0) return;
+
+        // 1. Claim pending rewards (both variants)
+        try ISlipstreamGauge(gauge).getReward(tokenId) {} catch {}
+        try ISlipstreamGauge(gauge).getReward(address(this)) {} catch {}
+
+        // 2. Identify reward token and sweep balance to vault
+        address rewardToken;
+        try ISlipstreamGauge(gauge).rewardToken() returns (address rt) {
+            rewardToken = rt;
+        } catch {
+            rewardToken = address(0);
+        }
+
+        if (rewardToken != address(0)) {
+            uint256 bal = IERC20(rewardToken).balanceOf(address(this));
+            if (bal > 0) IERC20(rewardToken).safeTransfer(vault, bal);
+        }
+    }
+
+    /**
+     * @notice Stake the current position in the gauge.
+     */
+    function stakePosition(address vault) external override {
+        if (gauge == address(0)) return;
+        uint256 tokenId = _tokenId[vault];
+        require(tokenId != 0, "no pos");
+
+        // Approve once (no reset needed)
+        ISlipstreamNFPM(nfpm).setApprovalForAll(gauge, true);
+        ISlipstreamGauge(gauge).deposit(tokenId);
+    }
+
+    /**
+     * @notice Unstake from gauge, claiming rewards first.
+     */
+    function unstakePosition(address vault) external override {
+        if (gauge == address(0)) return;
+        uint256 tokenId = _tokenId[vault];
+        require(tokenId != 0, "no pos");
+
+        // 1. claim rewards before unstake
+        claimRewards(vault);
+
+        // 2. withdraw from gauge
+        ISlipstreamGauge(gauge).withdraw(tokenId);
+    }
 
     function rebalanceWithCaps(
         address vault,
@@ -261,23 +314,18 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
         lastRebalance[vault] = block.timestamp;
     }
 
+    
+    /**
+     * @notice Exit position completely. Reverts if still staked.
+     */
     function exitPositionToVault(address vault) external override {
         uint256 tokenId = _tokenId[vault];
         if (tokenId == 0) return;
 
-        // Se staked, faça claim e retire para permitir o exit (qualquer ordem externa deve funcionar)
-        if (_isStaked(tokenId)) {
-            // best-effort claim
-            if (gauge != address(0)) {
-                // tokenId-variant
-                try ISlipstreamGauge(gauge).getReward(tokenId) {} catch {}
-                // account-variant (adapter como "depositor")
-                try ISlipstreamGauge(gauge).getReward(address(this)) {} catch {}
-            }
-            ISlipstreamGauge(gauge).withdraw(tokenId);
-        }
+        // safety: prevent exit while staked
+        require(!_isStaked(tokenId), "position staked");
 
-        // collect -> decrease -> collect -> burn (fundos ficam no adapter e depois enviamos ao vault)
+        // collect + remove liquidity
         ISlipstreamNFPM(nfpm).collect(ISlipstreamNFPM.CollectParams({
             tokenId: tokenId,
             recipient: address(this),
@@ -294,6 +342,7 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
                 amount1Min: 0,
                 deadline: block.timestamp
             }));
+
             ISlipstreamNFPM(nfpm).collect(ISlipstreamNFPM.CollectParams({
                 tokenId: tokenId,
                 recipient: address(this),
@@ -301,11 +350,17 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
                 amount1Max: type(uint128).max
             }));
         }
+        
+        // also sweep any gauge reward tokens
+        if (gauge != address(0)) {
+            try this.claimRewards(vault) {} catch {}
+        }
 
+        // burn NFT
         ISlipstreamNFPM(nfpm).burn(tokenId);
         _tokenId[vault] = 0;
 
-        // Envia todos os saldos ao VAULT
+        // send all balances to vault
         (address token0, address token1) = tokens();
         uint256 b0 = IERC20(token0).balanceOf(address(this));
         uint256 b1 = IERC20(token1).balanceOf(address(this));
@@ -313,11 +368,17 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
         if (b1 > 0) IERC20(token1).safeTransfer(vault, b1);
     }
 
-    function collectToVault(address vault) external override returns (uint256 amount0, uint256 amount1) {
+    /**
+     * @notice Collect fees from NFPM and forward to vault.
+     */
+    function collectToVault(address vault)
+        external
+        override
+        returns (uint256 amount0, uint256 amount1)
+    {
         uint256 tokenId = _tokenId[vault];
         if (tokenId == 0) return (0, 0);
 
-        // Coleta para o ADAPTER…
         (amount0, amount1) = ISlipstreamNFPM(nfpm).collect(
             ISlipstreamNFPM.CollectParams({
                 tokenId: tokenId,
@@ -327,45 +388,8 @@ contract SlipstreamAdapter is IConcentratedLiquidityAdapter, IERC721Receiver {
             })
         );
 
-        // …e envia ao VAULT
         (address token0, address token1) = tokens();
         if (amount0 > 0) IERC20(token0).safeTransfer(vault, amount0);
         if (amount1 > 0) IERC20(token1).safeTransfer(vault, amount1);
-    }
-
-    // ===== staking helpers =====
-
-    function stakePosition(address vault) external override {
-        if (gauge == address(0)) return;
-        uint256 tokenId = _tokenId[vault];
-        require(tokenId != 0, "no pos");
-        // garantir aprovação do gauge para mover o NFT
-        try ISlipstreamNFPM(nfpm).setApprovalForAll(gauge, true) {} catch {
-            // alguns NFPM podem exigir approve(tokenId); se precisar, adicione na interface e use aqui
-        }
-        ISlipstreamGauge(gauge).deposit(tokenId);
-    }
-
-    function unstakePosition(address vault) external override {
-        if (gauge == address(0)) return;
-        uint256 tokenId = _tokenId[vault];
-        require(tokenId != 0, "no pos");
-        // claim antes do withdraw (best-effort)
-        bool claimed = false;
-        try ISlipstreamGauge(gauge).getReward(tokenId) { claimed = true; } catch {}
-        try ISlipstreamGauge(gauge).getReward(address(this)) { claimed = true; } catch {}
-
-        require(claimed, "not claimed");
-
-        ISlipstreamGauge(gauge).withdraw(tokenId);
-    }
-
-    function claimRewards(address vault) external override {
-        if (gauge == address(0)) return;
-        uint256 tokenId = _tokenId[vault];
-        if (tokenId == 0) return;
-        // tentar ambas variantes
-        try ISlipstreamGauge(gauge).getReward(tokenId) {} catch {}
-        try ISlipstreamGauge(gauge).getReward(address(this)) {} catch {}
     }
 }

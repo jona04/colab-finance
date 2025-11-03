@@ -165,14 +165,40 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
                 "pending_amount": pending_human,
                 "pending_usd_est": (float(usd_est) if usd_est is not None else None),
             }
-
         except Exception as e:
             gauge_rewards_block = {
                 "error": f"gauge_read_failed: {str(e)}"
             }
     else:
         gauge_rewards_block = None
-        
+    
+    
+    gauge_reward_balances = None
+    try:
+        # Só faz sentido se conhecemos o reward token
+        if gauge_rewards_block and "reward_token" in gauge_rewards_block:
+            reward_token_addr = gauge_rewards_block["reward_token"]
+            reward_symbol     = gauge_rewards_block.get("reward_symbol", "REWARD")
+
+            # contrato ERC20 do reward
+            erc_reward = adapter.erc20(reward_token_addr)
+            reward_dec = int(erc_reward.functions.decimals().call())
+
+            # saldos
+            in_vault_raw   = int(erc_reward.functions.balanceOf(adapter.vault.address).call())
+            in_vault_h   = float(in_vault_raw) / (10 ** reward_dec)
+
+            gauge_reward_balances = {
+                "token": reward_token_addr,
+                "symbol": reward_symbol,
+                "decimals": reward_dec,
+                "in_vault_raw": in_vault_raw,
+                "in_vault": in_vault_h,
+            }
+    except Exception as e:
+        gauge_reward_balances = {"error": f"reward_balance_read_failed: {str(e)}"}
+    
+    
     # position location
     if token_id == 0:
         position_location = "none"
@@ -281,6 +307,7 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
         cooldown_active=cooldown_active,
         prices=prices_panel,
         gauge_rewards=gauge_rewards_block,
+        gauge_reward_balances=gauge_reward_balances,
         fees_uncollected=fees_uncollected,
         fees_collected_cum=fees_collected_cum,
         out_of_range=out_of_range,

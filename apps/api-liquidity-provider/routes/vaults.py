@@ -521,7 +521,7 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
         }
         state_repo.append_history(dex, alias, "exec_history", {
             "ts": datetime.utcnow().isoformat(),
-            "mode": "open_initial_failed_budget",
+            "mode": "exit_failed_budget",
             "payload": payload,
         })
         raise HTTPException(
@@ -557,7 +557,7 @@ def withdraw(dex: str, alias: str, req: WithdrawRequest):
 
         state_repo.append_history(dex, alias, "exec_history", {
             "ts": datetime.utcnow().isoformat(),
-            "mode": "open_initial_failed_revert",
+            "mode": "exit_failed_revert",
             "payload": payload,
         })
 
@@ -711,7 +711,7 @@ def collect(dex: str, alias: str, req: CollectRequest):
         }
         state_repo.append_history(dex, alias, "exec_history", {
             "ts": datetime.utcnow().isoformat(),
-            "mode": "open_initial_failed_budget",
+            "mode": "collect_failed_budget",
             "payload": payload,
         })
         raise HTTPException(
@@ -746,7 +746,7 @@ def collect(dex: str, alias: str, req: CollectRequest):
 
         state_repo.append_history(dex, alias, "exec_history", {
             "ts": datetime.utcnow().isoformat(),
-            "mode": "open_initial_failed_revert",
+            "mode": "collect_failed_revert",
             "payload": payload,
         })
 
@@ -1049,14 +1049,121 @@ def stake_nft(dex: str, alias: str, req: StakeRequest):
 
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
 
-    # chama o fluxo correto via Vault -> Adapter -> Gauge
-    txh = TxService(v.get("rpc_url")).send(ad.fn_stake_nft())
+    # snapshot BEFORE
+    before = snapshot_status(ad, dex, alias)
+    
+    # limite opcional de gas em USD (exemplo: 0.02 USD máx)
+    eth_usd_hint = estimate_eth_usd_from_pool(ad)
+    max_budget_usd = req.max_budget_usd
+    
+    fn = ad.fn_stake_nft()
+    txs = TxService(v.get("rpc_url"))
+    try:
+        send_res = txs.send(
+            fn,
+            wait=True,
+            gas_strategy="buffered",
+            max_gas_usd=max_budget_usd,
+            eth_usd_hint=eth_usd_hint,
+        )
+    except TransactionBudgetExceededError as e:
+        payload = {
+            "tx_hash": None,
+            "broadcasted": False,
+            "status": None,
+            "error_type": "BUDGET_EXCEEDED",
+            "error_msg": "Gas cost upper bound is above allowed max_gas_usd",
+            "budget_info": {
+                "usd_budget": e.usd_budget,
+                "usd_estimated_upper_bound": e.usd_estimated,
+                "eth_usd_hint": e.eth_usd,
+                "gas_price_wei": e.gas_price_wei,
+                "est_gas_limit": e.est_gas_limit,
+            },
+        }
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "stake_gauge_failed_budget",
+            "payload": payload,
+        })
+        raise HTTPException(
+            status_code=400,
+            detail=payload,
+        )
+
+    except TransactionRevertedError as e:
+        rcpt = e.receipt or {}
+        gas_used = int(rcpt.get("gasUsed") or 0)
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+        gas_eth = gas_usd = None
+        if gas_used and eff_price_wei and eth_usd_hint:
+            gas_eth = float(
+                (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+            )
+            gas_usd = gas_eth * float(eth_usd_hint)
+
+        payload = {
+            "tx_hash": e.tx_hash,
+            "broadcasted": True,
+            "status": 0,
+            "error_type": "ONCHAIN_REVERT",
+            "error_msg": e.msg,
+            "receipt": rcpt,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": eff_price_wei,
+            "gas_eth": gas_eth,
+            "gas_usd": gas_usd,
+        }
+
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "stake_gauge_failed_revert",
+            "payload": payload,
+        })
+
+        raise HTTPException(
+            status_code=502,
+            detail=payload,
+        )
+        
+    rcpt = send_res["receipt"] or {}
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei and eth_usd_hint:
+        gas_eth = float(
+            (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+        )
+        gas_usd = gas_eth * float(eth_usd_hint)
+
+    after = snapshot_status(ad, dex, alias)
+
+    # log normal de sucesso
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "stake_gauge",
-        "tx": txh
+        "tx": send_res["tx_hash"],
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "gas_budget_check": send_res.get("gas_budget_check"),
+        "send_res": send_res
     })
-    return {"tx": txh}
+
+    return {
+        "tx": send_res["tx_hash"],
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "budget": send_res.get("gas_budget_check"),
+        "before": before,
+        "after": after,
+        "send_res": send_res
+    }
 
 @router.post("/vaults/{dex}/{alias}/unstake")
 def unstake_nft(dex: str, alias: str, req: UnstakeRequest):
@@ -1066,13 +1173,122 @@ def unstake_nft(dex: str, alias: str, req: UnstakeRequest):
 
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
 
-    txh = TxService(v.get("rpc_url")).send(ad.fn_unstake_nft())
+    fn = ad.fn_unstake_nft()
+    
+    # snapshot BEFORE
+    before = snapshot_status(ad, dex, alias)
+    
+    # limite opcional de gas em USD (exemplo: 0.02 USD máx)
+    eth_usd_hint = estimate_eth_usd_from_pool(ad)
+    max_budget_usd = req.max_budget_usd
+    
+    txs = TxService(v.get("rpc_url"))
+    try:
+        send_res = txs.send(
+            fn,
+            wait=True,
+            gas_strategy="buffered",
+            max_gas_usd=max_budget_usd,
+            eth_usd_hint=eth_usd_hint,
+        )
+    except TransactionBudgetExceededError as e:
+        payload = {
+            "tx_hash": None,
+            "broadcasted": False,
+            "status": None,
+            "error_type": "BUDGET_EXCEEDED",
+            "error_msg": "Gas cost upper bound is above allowed max_gas_usd",
+            "budget_info": {
+                "usd_budget": e.usd_budget,
+                "usd_estimated_upper_bound": e.usd_estimated,
+                "eth_usd_hint": e.eth_usd,
+                "gas_price_wei": e.gas_price_wei,
+                "est_gas_limit": e.est_gas_limit,
+            },
+        }
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "unstake_gauge_failed_budget",
+            "payload": payload,
+        })
+        raise HTTPException(
+            status_code=400,
+            detail=payload,
+        )
+
+    except TransactionRevertedError as e:
+        rcpt = e.receipt or {}
+        gas_used = int(rcpt.get("gasUsed") or 0)
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+        gas_eth = gas_usd = None
+        if gas_used and eff_price_wei and eth_usd_hint:
+            gas_eth = float(
+                (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+            )
+            gas_usd = gas_eth * float(eth_usd_hint)
+
+        payload = {
+            "tx_hash": e.tx_hash,
+            "broadcasted": True,
+            "status": 0,
+            "error_type": "ONCHAIN_REVERT",
+            "error_msg": e.msg,
+            "receipt": rcpt,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": eff_price_wei,
+            "gas_eth": gas_eth,
+            "gas_usd": gas_usd,
+        }
+
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "unstake_gauge_failed_revert",
+            "payload": payload,
+        })
+
+        raise HTTPException(
+            status_code=502,
+            detail=payload,
+        )
+        
+    rcpt = send_res["receipt"] or {}
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei and eth_usd_hint:
+        gas_eth = float(
+            (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+        )
+        gas_usd = gas_eth * float(eth_usd_hint)
+
+    after = snapshot_status(ad, dex, alias)
+
+    # log normal de sucesso
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "unstake_gauge",
-        "tx": txh
+        "tx": send_res["tx_hash"],
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "gas_budget_check": send_res.get("gas_budget_check"),
+        "send_res": send_res
     })
-    return {"tx": txh}
+
+    return {
+        "tx": send_res["tx_hash"],
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "budget": send_res.get("gas_budget_check"),
+        "before": before,
+        "after": after,
+        "send_res": send_res
+    }
 
 @router.post("/vaults/{dex}/{alias}/claim")
 def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
@@ -1081,16 +1297,123 @@ def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
     if not v.get("pool"): raise HTTPException(400, "Vault has no pool set")
 
     ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    
+    fn = ad.fn_claim_rewards()
+    
+    # snapshot BEFORE
+    before = snapshot_status(ad, dex, alias)
+    
+    # limite opcional de gas em USD (exemplo: 0.02 USD máx)
+    eth_usd_hint = estimate_eth_usd_from_pool(ad)
+    max_budget_usd = req.max_budget_usd
+    
+    txs = TxService(v.get("rpc_url"))
+    try:
+        send_res = txs.send(
+            fn,
+            wait=True,
+            gas_strategy="buffered",
+            max_gas_usd=max_budget_usd,
+            eth_usd_hint=eth_usd_hint,
+        )
+    except TransactionBudgetExceededError as e:
+        payload = {
+            "tx_hash": None,
+            "broadcasted": False,
+            "status": None,
+            "error_type": "BUDGET_EXCEEDED",
+            "error_msg": "Gas cost upper bound is above allowed max_gas_usd",
+            "budget_info": {
+                "usd_budget": e.usd_budget,
+                "usd_estimated_upper_bound": e.usd_estimated,
+                "eth_usd_hint": e.eth_usd,
+                "gas_price_wei": e.gas_price_wei,
+                "est_gas_limit": e.est_gas_limit,
+            },
+        }
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "claim_rewards_failed_budget",
+            "payload": payload,
+        })
+        raise HTTPException(
+            status_code=400,
+            detail=payload,
+        )
 
-    # sempre via Vault/Adapter; o Adapter tenta ambas variantes de getReward
-    txh = TxService(v.get("rpc_url")).send(ad.fn_claim_rewards())
+    except TransactionRevertedError as e:
+        rcpt = e.receipt or {}
+        gas_used = int(rcpt.get("gasUsed") or 0)
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+        gas_eth = gas_usd = None
+        if gas_used and eff_price_wei and eth_usd_hint:
+            gas_eth = float(
+                (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+            )
+            gas_usd = gas_eth * float(eth_usd_hint)
+
+        payload = {
+            "tx_hash": e.tx_hash,
+            "broadcasted": True,
+            "status": 0,
+            "error_type": "ONCHAIN_REVERT",
+            "error_msg": e.msg,
+            "receipt": rcpt,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": eff_price_wei,
+            "gas_eth": gas_eth,
+            "gas_usd": gas_usd,
+        }
+
+        state_repo.append_history(dex, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "claim_rewards_failed_revert",
+            "payload": payload,
+        })
+
+        raise HTTPException(
+            status_code=502,
+            detail=payload,
+        )
+        
+    rcpt = send_res["receipt"] or {}
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei and eth_usd_hint:
+        gas_eth = float(
+            (Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18)
+        )
+        gas_usd = gas_eth * float(eth_usd_hint)
+
+    after = snapshot_status(ad, dex, alias)
+
+    # log normal de sucesso
     state_repo.append_history(dex, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
         "mode": "claim_rewards",
-        "by": "adapter",
-        "tx": txh
+        "tx": send_res["tx_hash"],
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "gas_budget_check": send_res.get("gas_budget_check"),
+        "send_res": send_res
     })
-    return {"tx": txh, "mode": "adapter"}
+
+    return {
+        "tx": send_res["tx_hash"],
+        "gas_used": gas_used,
+        "effective_gas_price_wei": eff_price_wei,
+        "gas_eth": gas_eth,
+        "gas_usd": gas_usd,
+        "budget": send_res.get("gas_budget_check"),
+        "before": before,
+        "after": after,
+        "send_res": send_res
+    }
 
 @router.post("/vaults/uniswap/{alias}/swap/quote")
 def swap_quote(alias: str, req: SwapQuoteRequest):
