@@ -69,6 +69,8 @@ def ensure_state_initialized(
             # running totals and histories
             "fees_collected_cum": {"token0_raw": 0, "token1_raw": 0},
             "fees_cum_usd": 0.0,
+            "rewards_usdc_cum": {"usdc_raw": 0, "usdc_human": 0.0},
+            "rewards_collect_history": [], 
             "exec_history": [],
             "collect_history": [],
             "deposit_history": [],
@@ -92,6 +94,19 @@ def ensure_state_initialized(
             st["exec_history"] = []; changed = True
         if "error_history" not in st:
             st["error_history"] = []; changed = True
+        if "fees_cum_usd" not in st:
+            st["fees_cum_usd"] = 0.0; changed = True
+        if "rewards_usdc_cum" not in st:
+            st["rewards_usdc_cum"] = {"usdc_raw": 0, "usdc_human": 0.0}; changed = True
+        if "rewards_collect_history" not in st:
+            st["rewards_collect_history"] = []; changed = True
+        if "collect_history" not in st:
+            st["collect_history"] = []; changed = True
+        if "deposit_history" not in st:
+            st["deposit_history"] = []; changed = True
+        if "vault_initial_usd" not in st:
+            # opcional: setar baseline na primeira leitura do status
+            pass
             
     if extra:
         # merge raso, sem sobrescrever se já houver chave
@@ -134,4 +149,33 @@ def add_collected_fees_snapshot(
     st["fees_collected_cum"] = cum
     st["fees_cum_usd"] = float(st.get("fees_cum_usd", 0.0)) + float(fees_usd_est or 0.0)
     st["last_fees_update_ts"] = datetime.utcnow().isoformat()
+    save_state(dex, alias, st)
+
+def add_rewards_usdc_snapshot(
+    dex: str,
+    alias: str,
+    *,
+    usdc_raw: int,
+    usdc_human: float,
+    meta: Optional[Dict[str, Any]] = None
+):
+    """
+    Soma ao acumulado de 'rewards' (já convertidos para USDC).
+    Use isso após um swap AERO->USDC bem-sucedido.
+    """
+    st = load_state(dex, alias)
+    cum = st.get("rewards_usdc_cum", {"usdc_raw": 0, "usdc_human": 0.0})
+    cum["usdc_raw"]   = int(cum.get("usdc_raw", 0)) + int(usdc_raw or 0)
+    cum["usdc_human"] = float(cum.get("usdc_human", 0.0)) + float(usdc_human or 0.0)
+    st["rewards_usdc_cum"] = cum
+
+    hist = st.get("rewards_collect_history", [])
+    hist.append({
+        "ts": datetime.utcnow().isoformat(),
+        "usdc_raw": int(usdc_raw),
+        "usdc_human": float(usdc_human),
+        "meta": (meta or {}),
+    })
+    st["rewards_collect_history"] = hist[-200:]  # mantém curto
+
     save_state(dex, alias, st)

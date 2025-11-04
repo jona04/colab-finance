@@ -16,7 +16,7 @@ from ..config import get_settings
 from .state_repo import load_state, save_state
 from ..adapters.uniswap_v3 import UniswapV3Adapter
 from ..domain.models import (
-    PricesBlock, PricesPanel, UsdPanelModel,
+    PricesBlock, PricesPanel, RewardsCollectedCum, UsdPanelModel,
     HoldingsSide, HoldingsMeta, HoldingsBlock,
     FeesUncollected, StatusCore, FeesCollectedCum
 )
@@ -255,6 +255,10 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
     cum1 = cum1_raw / (10 ** dec1)
     cum_usd = _value_usd(cum0, cum1, p_t1_t0, p_t0_t1, sym0, sym1, t0_addr, t1_addr)
 
+    cum = st.get("rewards_usdc_cum", {}) or {}
+    rewards_usdc_raw = int(cum.get("usdc_raw", 0))
+    rewards_usdc     = float(cum.get("usdc_human", 0.0))
+    
     baseline = st.get("vault_initial_usd")
     if baseline is None:
         baseline = total_usd
@@ -296,6 +300,11 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
 
     range_side = "inside" if not out_of_range else ("below" if tick < lower else "above")
 
+    rewards_block = RewardsCollectedCum(
+        usdc_raw=rewards_usdc_raw,
+        usdc=rewards_usdc,
+    )
+        
     return StatusCore(
         tick=tick,
         lower=lower,
@@ -308,6 +317,7 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
         prices=prices_panel,
         gauge_rewards=gauge_rewards_block,
         gauge_reward_balances=gauge_reward_balances,
+        rewards_collected_cum=rewards_block,
         fees_uncollected=fees_uncollected,
         fees_collected_cum=fees_collected_cum,
         out_of_range=out_of_range,

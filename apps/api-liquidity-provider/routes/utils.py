@@ -1,5 +1,9 @@
 
 
+from typing import Optional
+
+from fastapi import HTTPException
+from web3 import Web3
 from ..domain.models import StatusCore
 from ..services.chain_reader import USD_SYMBOLS, compute_status, sqrtPriceX96_to_price_t1_per_t0
 from ..adapters.aerodrome import AerodromeAdapter
@@ -94,3 +98,26 @@ def estimate_eth_usd_from_pool(ad) -> float | None:
         return float(0 if p_t1_t0b == 0 else 1.0/p_t1_t0b)
 
     return None
+
+def resolve_uniswap_pool_from_vault(v: dict, pool_override: Optional[str]) -> str:
+    """
+    Retorna o endereço do pool Uniswap (checksum).
+    - Se pool_override é "0x..." => usa direto.
+    - Se pool_override é uma chave (ex: "AERO_USDC") => usa v["swap_pools"][key] com dex == "uniswap".
+    - Se nada vier => tenta chave "AERO_USDC" em v["swap_pools"].
+    """
+    if pool_override:
+        if pool_override.lower().startswith("0x"):
+            return Web3.to_checksum_address(pool_override)
+        sp = (v.get("swap_pools") or {}).get(pool_override)
+        if not sp:
+            raise HTTPException(400, f"swap_pools key not found: {pool_override}")
+        if str(sp.get("dex")).lower() != "uniswap":
+            raise HTTPException(400, "pool_override dex must be 'uniswap'")
+        return Web3.to_checksum_address(sp["pool"])
+
+    # default: tente "AERO_USDC"
+    sp = (v.get("swap_pools") or {}).get("AERO_USDC")
+    if not sp or str(sp.get("dex")).lower() != "uniswap":
+        raise HTTPException(400, "Missing swap_pools.AERO_USDC with dex='uniswap' or pass pool_override")
+    return Web3.to_checksum_address(sp["pool"])

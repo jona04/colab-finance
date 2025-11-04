@@ -944,5 +944,10 @@
     }
   ],
   "error_history": [],
-  "vault_initial_usd": 0.0
+  "vault_initial_usd": 0.0,
+  "rewards_usdc_cum": {
+    "usdc_raw": 0,
+    "usdc_human": 0.0
+  },
+  "rewards_collect_history": []
 }

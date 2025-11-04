@@ -80,7 +80,10 @@
       "nfpm": "0x827922686190790b37229fd06084350E74485b72",
       "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
       "rpc_url": "https://base-mainnet.infura.io/v3/079d35a3c196469191c9accc1d68d25b",
-      "version": "v2"
+      "version": "v2",
+      "swap_pools": {
+        "AERO_USDC": { "dex": "uniswap", "pool": "0xe5b5f522e98b5a2baae212d4da66b865b781db97" }
+      }
     },
     "api5": {
       "address": "0xd32d5B2A76a3047B206051911f9CE1CeE205564C",
@@ -89,7 +92,10 @@
       "nfpm": "0x827922686190790b37229fd06084350E74485b72",
       "gauge": "0x45C6e6A47a711B14D8357D5243F46704904578e3",
       "rpc_url": "https://base-mainnet.infura.io/v3/079d35a3c196469191c9accc1d68d25b",
-      "version": "v2"
+      "version": "v2",
+      "swap_pools": {
+        "AERO_USDC": { "dex": "uniswap", "pool": "0xe5b5f522e98b5a2baae212d4da66b865b781db97" }
+      }
     }
   }
 }

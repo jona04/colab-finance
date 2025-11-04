@@ -236,6 +236,13 @@ class UniswapV3Adapter(DexAdapter):
         a0, a1 = nfpm.functions.collect((token_id, Web3.to_checksum_address(recipient), U128_MAX, U128_MAX)).call()
         return int(a0), int(a1)
 
+    def uni_pool_fee(self, pool_addr: str) -> int:
+        pool = self.w3.eth.contract(
+            address=Web3.to_checksum_address(pool_addr),
+            abi=self.pool_abi(),
+        )
+        return int(pool.functions.fee().call())
+    
     # ---------- writes (return ContractFunctions) ----------
     def fn_open(self, lower: int, upper: int):
         # adapt name if contract uses different selector

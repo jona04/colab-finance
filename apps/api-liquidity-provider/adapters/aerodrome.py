@@ -41,6 +41,15 @@ ABI_VAULT = [
         {"type":"uint256","name":"amountOutMinimum"},
         {"type":"uint160","name":"sqrtPriceLimitX96"}
     ],"stateMutability":"nonpayable","type":"function"},
+        {"name":"swapExactInAMM","outputs":[{"type":"uint256"}],"inputs":[
+        {"type":"address","name":"router"},
+        {"type":"address","name":"tokenIn"},
+        {"type":"address","name":"tokenOut"},
+        {"type":"bool","name":"stable"},
+        {"type":"address","name":"factory"},
+        {"type":"uint256","name":"amountIn"},
+        {"type":"uint256","name":"amountOutMinimum"}
+    ],"stateMutability":"nonpayable","type":"function"},
 ]
 
 ABI_AERO_QUOTER = [
@@ -99,7 +108,9 @@ class AerodromeAdapter(DexAdapter):
     def gauge_impl_abi(self) -> list:   return _load_abi_json("GaugeImplementation.json")
     def erc20_abi(self) -> list:        return ABI_ERC20
     def vault_abi(self) -> list:        return ABI_VAULT
-    
+    def factory_amm_abi(self) -> list:    return _load_abi_json("PoolFactoryAMM.json")
+    def router_amm_abi(self) -> list:    return _load_abi_json("RouterAMM.json")
+
     # ---- contracts helpers ----
     def pool_contract(self):
         return self.w3.eth.contract(address=Web3.to_checksum_address(self.pool), abi=self.pool_abi())
@@ -115,6 +126,41 @@ class AerodromeAdapter(DexAdapter):
         addr = Web3.to_checksum_address(os.getenv("AERODROME_POOL_FACTORY", "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"))
         return self.w3.eth.contract(address=addr, abi=self.factory_abi())
     
+    def factory_amm_contract(self):
+        # AMM factory (solidly/velodrome style)
+        env = os.getenv("AERO_POOL_FACTORY_AMM", "0x420DD381b31aEf6683db6B902084cB0FFECe40Da")
+        if not env:
+            raise RuntimeError("AERO_POOL_FACTORY_AMM not configured")
+        addr = Web3.to_checksum_address(env)
+        return self.w3.eth.contract(address=addr, abi=self.factory_amm_abi())
+
+    def aerodrome_router_amm(self, addr: str):
+        return self.w3.eth.contract(address=Web3.to_checksum_address(addr), abi=self.router_amm_abi())
+
+    def build_amm_routes(self, token_in: str, token_out: str, stable: bool, factory_addr: str):
+        return [(
+            Web3.to_checksum_address(token_in),
+            Web3.to_checksum_address(token_out),
+            bool(stable),
+            Web3.to_checksum_address(factory_addr),
+        )] 
+    
+    def quote_amm(self, router_addr: str, factory_addr: str, token_in: str, token_out: str, amount_in_raw: int):
+        r = self.aerodrome_router_amm(router_addr)
+        best = None
+        for stable in (False, True):
+            routes = self.build_amm_routes(token_in, token_out, stable, factory_addr)
+            try:
+                amounts = r.functions.getAmountsOut(int(amount_in_raw), routes).call()
+                out_raw = int(amounts[-1])
+                if out_raw > 0 and (not best or out_raw > best["out_raw"]):
+                    best = {"out_raw": out_raw, "stable": stable}
+            except Exception:
+                pass
+        if not best:
+            raise RuntimeError("AMM: nenhuma rota viável (getAmountsOut)")
+        return best
+
     def gauge_address(self) -> Optional[str]:
         try:
             g = self.pool_contract().functions.gauge().call()
@@ -153,7 +199,85 @@ class AerodromeAdapter(DexAdapter):
     def aerodrome_router(self, addr: str):
         return self.w3.eth.contract(address=Web3.to_checksum_address(addr), abi=ABI_AERO_ROUTER)
 
+    def tick_spacing_for_pool(self, pool_addr: str) -> int:
+        c = self.w3.eth.contract(address=Web3.to_checksum_address(pool_addr), abi=self.pool_abi())
+        return int(c.functions.tickSpacing().call())
     
+    def is_slipstream_pool(self, pool_addr: str) -> bool:
+        try:
+            c = self.w3.eth.contract(address=Web3.to_checksum_address(pool_addr), abi=self.pool_abi())
+            _ = int(c.functions.tickSpacing().call())
+            _ = c.functions.slot0().call()
+            return True
+        except Exception:
+            return False
+
+    def is_amm_pool(self, pool_addr: str) -> bool:
+        try:
+            f = self.factory_amm_contract()
+            return bool(f.functions.isPool(Web3.to_checksum_address(pool_addr)).call())
+        except Exception:
+            return False
+
+    def get_amm_fee(self, pool_addr: str, stable: bool = False) -> int:
+        """
+        Obtém 'fee' do AMM via factory.getFee(pool, stable=False).
+        """
+        f = self.factory_amm_contract()
+        return int(f.functions.getFee(Web3.to_checksum_address(pool_addr), bool(stable)).call())
+
+    def resolve_route_tickspacing_or_fee(self, pool_addr: str) -> int:
+        """
+        Retorna um único inteiro para passar ao router:
+          - Slipstream (CL): tickSpacing()
+          - AMM: getFee()
+        """
+        if self.is_slipstream_pool(pool_addr):
+            return self.tick_spacing_for_pool(pool_addr)
+        if self.is_amm_pool(pool_addr):
+            return self.get_amm_fee(pool_addr, stable=False)
+        raise ValueError("Endereço não é Slipstream nem AMM reconhecido por factory")
+    
+    def read_token_meta(self, token_addr: str) -> Dict[str, Any]:
+        e = self.erc20(token_addr)
+        try: sym = e.functions.symbol().call()
+        except: sym = "TKN"
+        dec = int(e.functions.decimals().call())
+        return {"address": Web3.to_checksum_address(token_addr), "symbol": sym, "decimals": dec}
+
+    def pool_meta(self) -> Dict[str, Any]:
+        """
+        Para **Slipstream (CL)**. Se precisar apenas de tokens/decimais,
+        use read_token_meta() diretamente.
+        """
+        if not self.is_slipstream_pool(self.pool):
+            # Evite exceptions aqui; algumas chamadas (quote) só querem decimais/símbolos
+            pc = self.pool_contract()
+            t0 = pc.functions.token0().call()
+            t1 = pc.functions.token1().call()
+            e0 = self.erc20(t0); e1 = self.erc20(t1)
+            try: sym0 = e0.functions.symbol().call()
+            except: sym0 = "T0"
+            try: sym1 = e1.functions.symbol().call()
+            except: sym1 = "T1"
+            dec0 = int(e0.functions.decimals().call())
+            dec1 = int(e1.functions.decimals().call())
+            # spacing pode não existir em AMM — devolva -1
+            spacing = -1
+            return {"token0": t0, "token1": t1, "spacing": spacing, "sym0": sym0, "sym1": sym1, "dec0": dec0, "dec1": dec1}
+
+        pc = self.pool_contract()
+        t0 = pc.functions.token0().call()
+        t1 = pc.functions.token1().call()
+        spacing = int(pc.functions.tickSpacing().call())
+        e0 = self.erc20(t0); e1 = self.erc20(t1)
+        try: sym0 = e0.functions.symbol().call()
+        except: sym0 = "T0"
+        try: sym1 = e1.functions.symbol().call()
+        except: sym1 = "T1"
+        dec0 = int(e0.functions.decimals().call())
+        dec1 = int(e1.functions.decimals().call())
+        return {"token0": t0, "token1": t1, "spacing": spacing, "sym0": sym0, "sym1": sym1, "dec0": dec0, "dec1": dec1}
     
     # ---- sanity ----
     def assert_is_pool(self):
@@ -401,4 +525,26 @@ class AerodromeAdapter(DexAdapter):
             int(amount_in_raw),
             int(min_out_raw),
             int(sqrt_price_limit_x96 or 0)
+        )
+    
+    def fn_vault_swap_exact_in_amm(
+        self,
+        router: str,
+        token_in: str,
+        token_out: str,
+        stable: bool,
+        factory_addr: str,
+        amount_in_raw: int,
+        min_out_raw: int,
+    ):
+        if not hasattr(self.vault.functions, "swapExactInAMM"):
+            raise NotImplementedError("Vault V2 precisa expor swapExactInAMM(...) para AMM.")
+        return self.vault.functions.swapExactInAMM(
+            Web3.to_checksum_address(router),
+            Web3.to_checksum_address(token_in),
+            Web3.to_checksum_address(token_out),
+            bool(stable),
+            Web3.to_checksum_address(factory_addr),
+            int(amount_in_raw),
+            int(min_out_raw),
         )

@@ -27,6 +27,10 @@ class SetPoolRequest(BaseModel):
     alias: str
     pool: str
 
+class SwapPoolRef(BaseModel):
+    dex: Literal["uniswap", "aerodrome"]
+    pool: str
+    
 class DeployVaultRequest(BaseModel):
     alias: str
     nfpm: str
@@ -36,6 +40,7 @@ class DeployVaultRequest(BaseModel):
     version: Literal["v1","v2"] = "v2"
     owner: Optional[str] = None            # se None, usamos SENDER_FROM_ENV do TxService
     gauge: Optional[str] = None            # só Aerodrome (opcional)
+    swap_pools: Optional[Dict[str, SwapPoolRef]] = None
     
 class OpenRequest(BaseModel):
     # modo ticks
@@ -136,6 +141,12 @@ class FeesUncollected(BaseModel):
     sym0: str
     sym1: str
     
+
+class RewardsCollectedCum(BaseModel):
+    usdc_raw: int
+    usdc: float
+
+
 class StatusCore(BaseModel):
     tick: int
     lower: int
@@ -148,6 +159,7 @@ class StatusCore(BaseModel):
     prices: PricesPanel
     gauge_rewards: Optional[dict]
     gauge_reward_balances: Optional[dict] = None
+    rewards_collected_cum: RewardsCollectedCum = RewardsCollectedCum(usdc_raw=0, usdc=0.0)
     fees_uncollected: FeesUncollected
     fees_collected_cum: FeesCollectedCum
     out_of_range: bool
@@ -164,17 +176,10 @@ class StatusCore(BaseModel):
     position_location: Literal["none", "pool", "gauge"] = "none"
 
 
-# Resposta completa do endpoint
 class StatusResponse(StatusCore):
     alias: str
     vault: str
     pool: str
-
-
-
-
-# Stake
-
 
 class StakeRequest(BaseModel):
     """Stake the current or a specific position tokenId into the gauge."""

@@ -52,3 +52,12 @@ def set_pool(dex: str, alias: str, pool_addr: str):
         raise ValueError("unknown alias")
     d["vaults"][alias]["pool"] = pool_addr
     _vaults_path(dex).write_text(json.dumps(d, indent=2))
+
+def get_vault_any(alias: str):
+    v = get_vault("uniswap", alias)
+    if v:
+        return "uniswap", v
+    v = get_vault("aerodrome", alias)
+    if v:
+        return "aerodrome", v
+    return None, None

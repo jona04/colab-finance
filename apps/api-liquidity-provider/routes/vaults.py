@@ -9,7 +9,7 @@ from web3 import Web3
 
 from ..services.exceptions import TransactionBudgetExceededError, TransactionRevertedError
 
-from ..routes.utils import estimate_eth_usd_from_pool, snapshot_status, tick_spacing_candidates
+from ..routes.utils import estimate_eth_usd_from_pool, resolve_uniswap_pool_from_vault, snapshot_status, tick_spacing_candidates
 
 from ..domain.swap import SwapExactInRequest, SwapQuoteRequest
 from ..config import get_settings
@@ -999,6 +999,16 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
     except Exception as e:
         raise HTTPException(500, f"setPoolOnce failed: {e}")
 
+    normalized_swap_pools = {}
+    if req.swap_pools:
+        for k, ref in req.swap_pools.items():
+            if isinstance(ref, dict):
+                # já no formato novo vindo do Pydantic (dex/pool)
+                normalized_swap_pools[k] = {"dex": ref["dex"], "pool": Web3.to_checksum_address(ref["pool"])}
+            else:
+                # fallback: veio como string (somente address) -> assume DEX do pedido atual
+                normalized_swap_pools[k] = {"dex": dex, "pool": Web3.to_checksum_address(str(ref))}
+
     # 4) registry/state
     vault_repo.add_vault(dex, req.alias, {
         "address": vault_addr,
@@ -1007,7 +1017,8 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
         "nfpm": req.nfpm,
         "gauge": req.gauge,
         "rpc_url": req.rpc_url,
-        "version": "v2"
+        "version": "v2",
+        "swap_pools": normalized_swap_pools,
     })
     state_repo.ensure_state_initialized(
         dex, req.alias,
@@ -1038,7 +1049,7 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
         "alias": req.alias,
         "dex": dex,
         "version": "v2",
-        "owner": owner
+        "owner": owner,
     }
 
 @router.post("/vaults/{dex}/{alias}/stake")
@@ -1417,149 +1428,210 @@ def claim_rewards(dex: str, alias: str, req: ClaimRewardsRequest):
 
 @router.post("/vaults/uniswap/{alias}/swap/quote")
 def swap_quote(alias: str, req: SwapQuoteRequest):
-    dex = "uniswap"
-    v = vault_repo.get_vault(dex, alias)
-    if not v: raise HTTPException(404, "Unknown alias")
+    dex_for_quote = "uniswap"
+
+    # 1) pegue o vault de qualquer DEX (aerodrome no seu caso)
+    vault_dex, v = vault_repo.get_vault_any(alias)
+    if not v:
+        raise HTTPException(404, "Unknown alias (not found in uniswap or aerodrome)")
 
     s = get_settings()
     if not s.UNI_V3_QUOTER:
         raise HTTPException(500, "UNI_V3_QUOTER not configured")
 
-    ad  = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
-    
-    dec_in = int(ad.erc20(req.token_in).functions.decimals().call())
-    dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
+    # 2) adapter do VAULT (para decimals/balances/symbols em token_in/out)
+    ad_vault = _adapter_for(vault_dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+
+    # 3) resolver pool Uniswap (override ou swap_pools)
+    pool_uni = resolve_uniswap_pool_from_vault(v, req.pool_override)
+
+    # 4) adapter de LEITURA no pool Uniswap
+    ad_uni = _adapter_for(dex_for_quote, pool_uni, None, v["address"], v.get("rpc_url"))
+    quoter = ad_uni.quoter(s.UNI_V3_QUOTER)
+
+    # 5) metadados do POOL (garante que os tokens do request estão no pool)
+    meta_uni = ad_uni.pool_meta()
+    pool_t0, pool_t1 = Web3.to_checksum_address(meta_uni["token0"]), Web3.to_checksum_address(meta_uni["token1"])
+    pool_fee = int(ad_uni.uni_pool_fee(pool_uni))
+    t0_sym, t1_sym = meta_uni["sym0"], meta_uni["sym1"]
+
+    token_in  = Web3.to_checksum_address(req.token_in)
+    token_out = Web3.to_checksum_address(req.token_out)
+
+    # Conjunto dos tokens tem que bater com o conjunto do pool
+    if {token_in, token_out} != {pool_t0, pool_t1}:
+        raise HTTPException(
+            400,
+            {
+                "error": "TOKENS_NOT_IN_POOL",
+                "hint": "Confira se está usando USDC x USDbC corretamente ou outro endereço AERO.",
+                "pool_used": pool_uni,
+                "pool_token0": pool_t0,
+                "pool_token1": pool_t1,
+                "pool_symbols": [t0_sym, t1_sym],
+                "req_token_in": token_in,
+                "req_token_out": token_out,
+            },
+        )
+
+    # 6) decimals e amount_in_raw (com ERC20 do VAULT)
+    dec_in  = int(ad_vault.erc20(token_in).functions.decimals().call())
+    dec_out = int(ad_vault.erc20(token_out).functions.decimals().call())
     amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
-    
     if amount_in_raw <= 0:
         raise HTTPException(400, "amount_in must be > 0")
 
-    quoter = ad.quoter(s.UNI_V3_QUOTER)
-    
-    fee_candidates = [500, 3000, 10000] if not req.fee else [int(req.fee)]
+    # 7) fee: use SEMPRE o fee do pool (evita mismatch 500 vs 100/3000/10000)
+    fee_candidates = [pool_fee]
+
     best = None
-        
+    last_exc = None
     for fee in fee_candidates:
         params = {
-            "tokenIn": req.token_in,
-            "tokenOut": req.token_out,
-            "amountIn": amount_in_raw,
-            "fee": fee,
+            "tokenIn": token_in,
+            "tokenOut": token_out,
+            "amountIn": int(amount_in_raw),
+            "fee": int(fee),
             "sqrtPriceLimitX96": int(req.sqrt_price_limit_x96 or 0),
         }
         try:
             amount_out_raw, sqrt_after, ticks_crossed, gas_est = quoter.functions.quoteExactInputSingle(params).call()
-            if amount_out_raw > 0:
-                if not best or amount_out_raw > best["amount_out_raw"]:
-                    best = dict(
-                        fee=fee,
-                        amount_out_raw=amount_out_raw,
-                        sqrt_after=sqrt_after,
-                        ticks_crossed=ticks_crossed,
-                        gas_est=gas_est,
-                    )
-        except:
-            continue
-    
+            if int(amount_out_raw) > 0 and (not best or int(amount_out_raw) > best["amount_out_raw"]):
+                best = dict(
+                    fee=int(fee),
+                    amount_out_raw=int(amount_out_raw),
+                    sqrt_after=int(sqrt_after),
+                    ticks_crossed=int(ticks_crossed),
+                    gas_est=int(gas_est),
+                )
+        except Exception as e:
+            last_exc = str(e)
+            # continua tentando (se tivesse mais fees)
+
     if not best:
-        raise HTTPException(400, "No route available (all fee tiers reverted)")
-    
-    # --- Gas to ETH & USD (same logic as before)
-    gas_price_wei = int(ad.w3.eth.gas_price)
-    gas_eth = float((Decimal(best["gas_est"]) * Decimal(gas_price_wei)) / Decimal(10**18))
+        raise HTTPException(
+            400,
+            {
+                "error": "NO_ROUTE",
+                "msg": "No route available (all fee tiers reverted)",
+                "pool_used": pool_uni,
+                "pool_fee": pool_fee,
+                "pool_token0": pool_t0,
+                "pool_token1": pool_t1,
+                "pool_symbols": [t0_sym, t1_sym],
+                "req_token_in": token_in,
+                "req_token_out": token_out,
+                "last_exception": last_exc,
+                "hints": [
+                    "Verifique se o USDC é o nativo (0x8335...) ou USDbC (bridged).",
+                    "Confirme se o par e o fee (pool_fee) batem com o pool informado.",
+                    "Cheque se amount_in é grande o suficiente para não resultar em amount_out=0.",
+                    "Confirme se o UNI_V3_QUOTER é o endereço correto da chain Base.",
+                ],
+            },
+        )
 
-    meta = ad.pool_meta()
-    dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
-    sym0, sym1 = str(meta["sym0"]).upper(), str(meta["sym1"]).upper()
-    t0, t1 = meta["token0"], meta["token1"]
+    # 8) gas -> ETH/USDC usando o pool Uniswap do swap
+    gas_price_wei = int(ad_uni.w3.eth.gas_price)
+    gas_eth = float(Decimal(best["gas_est"]) * Decimal(gas_price_wei) / Decimal(10**18))
 
-    sqrtP, _ = ad.slot0()
-    p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)
+    dec0, dec1 = int(meta_uni["dec0"]), int(meta_uni["dec1"])
+    sqrtP, _   = ad_uni.slot0()
+    p_t1_t0    = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)
 
-    def _is_usdc(s): return s in USD_SYMBOLS
-    def _is_eth(s): return s in {"WETH","ETH"}
+    def _is_usdc(s): return str(s).upper() in USD_SYMBOLS
+    def _is_eth(s):  return str(s).upper() in {"WETH","ETH"}
 
     usdc_per_eth = None
-    if _is_usdc(sym1) and _is_eth(sym0): usdc_per_eth = p_t1_t0
-    elif _is_usdc(sym0) and _is_eth(sym1): usdc_per_eth = (0 if p_t1_t0==0 else 1/p_t1_t0)
+    if _is_usdc(t1_sym) and _is_eth(t0_sym): usdc_per_eth = p_t1_t0
+    elif _is_usdc(t0_sym) and _is_eth(t1_sym): usdc_per_eth = (0 if p_t1_t0 == 0 else 1/p_t1_t0)
 
     gas_usd = (gas_eth * float(usdc_per_eth)) if usdc_per_eth else None
 
-    # --- Valoração pós swap (valor percebido "final")
     amount_out_human = float(best["amount_out_raw"]) / (10 ** dec_out)
     value_at_sqrt_after_usd = _value_usd(
-        0, amount_out_human, p_t1_t0, 1/p_t1_t0, sym0, sym1, t0, t1
+        0, amount_out_human, p_t1_t0, 1/p_t1_t0, t0_sym, t1_sym, pool_t0, pool_t1
     )
 
     return {
-        "best_fee": best["fee"],
-        "amount_in_raw": amount_in_raw,
-        "amount_out_raw": best["amount_out_raw"],
+        "best_fee": int(best["fee"]),
+        "best_tick_spacing": int(best["fee"]),
+        "amount_in_raw": int(amount_in_raw),
+        "amount_out_raw": int(best["amount_out_raw"]),
         "amount_in": float(req.amount_in),
-        "amount_out": amount_out_human,
+        "amount_out": float(amount_out_human),
         "sqrtPriceX96_after": int(best["sqrt_after"]),
         "initialized_ticks_crossed": int(best["ticks_crossed"]),
         "gas_estimate": int(best["gas_est"]),
-        "gas_price_wei": gas_price_wei,
+        "gas_price_wei": int(gas_price_wei),
         "gas_price_gwei": float(Decimal(gas_price_wei) / Decimal(10**9)),
         "gas_eth": float(gas_eth),
         "gas_usd": float(gas_usd) if gas_usd else None,
         "value_at_sqrt_after_usd": float(value_at_sqrt_after_usd),
+        "pool_used": pool_uni,
+        "pool_symbols": [t0_sym, t1_sym],
     }
+
 
 @router.post("/vaults/uniswap/{alias}/swap/exact-in")
 def swap_exact_in(alias: str, req: SwapExactInRequest):
-    dex = "uniswap"
-    v = vault_repo.get_vault(dex, alias)
-    if not v: raise HTTPException(404, "Unknown alias")
+    dex_for_swap = "uniswap"
+
+    # 1) vault de qualquer DEX
+    vault_dex, v = vault_repo.get_vault_any(alias)
+    if not v:
+        raise HTTPException(404, "Unknown alias (not found in uniswap or aerodrome)")
 
     s = get_settings()
     if not s.UNI_V3_ROUTER or not s.UNI_V3_QUOTER:
         raise HTTPException(500, "UNI_V3_ROUTER/UNI_V3_QUOTER not configured")
 
-    state_repo.ensure_state_initialized(dex, alias, vault_address=v["address"])
-    ad = _adapter_for(dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    state_repo.ensure_state_initialized(vault_dex, alias, vault_address=v["address"])
 
-    # decimals
-    dec_in = int(ad.erc20(req.token_in).functions.decimals().call())
-    dec_out = int(ad.erc20(req.token_out).functions.decimals().call())
-    
-    # --- resolver amount_in_raw a partir de amount_in (token) OU amount_in_usd
+    # 2) adapters
+    ad_vault = _adapter_for(vault_dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"))
+    pool_uni = resolve_uniswap_pool_from_vault(v, req.pool_override)
+    ad_uni   = _adapter_for(dex_for_swap, pool_uni, None, v["address"], v.get("rpc_url"))
+
+    # 3) snapshot (opcional / protegido)
+    try:
+        before = snapshot_status(ad_vault, vault_dex, alias)
+    except Exception:
+        before = {"warning": "status_unavailable_for_this_dex"}
+
+    # 4) decimals no VAULT (onde estão os saldos)
+    dec_in  = int(ad_vault.erc20(req.token_in).functions.decimals().call())
+    dec_out = int(ad_vault.erc20(req.token_out).functions.decimals().call())
+
+    # 5) resolver amount_in_raw (token|usd) usando o POOL UNISWAP para taxas/preço de referência
     def _is_usdc(sym: str) -> bool: return sym.upper() in USD_SYMBOLS
     def _is_eth(sym: str)  -> bool: return sym.upper() in {"WETH","ETH"}
 
     amount_in_raw = None
-    resolved_mode = None  # "token" ou "usd"
-    
+    resolved_mode = None
+
     if req.amount_in is not None:
         amount_in_raw = int(float(req.amount_in) * (10 ** dec_in))
         resolved_mode = "token"
     elif req.amount_in_usd is not None:
-        # Só convertemos USD -> token quando token_in é WETH/ETH ou USDC
-        # Pegamos USDC/ETH do pool do vault (se for USDC↔(W)ETH); caso contrário, 400.
-        meta = ad.pool_meta()
-        sym0, sym1 = meta["sym0"], meta["sym1"]
-        dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
-        sqrtP, _ = ad.slot0()
-        p_t1_t0 = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)  # token1/token0
+        meta_uni = ad_uni.pool_meta()
+        sym0, sym1 = meta_uni["sym0"], meta_uni["sym1"]
+        dec0, dec1 = int(meta_uni["dec0"]), int(meta_uni["dec1"])
+        sqrtP, _   = ad_uni.slot0()
+        p_t1_t0    = sqrtPriceX96_to_price_t1_per_t0(sqrtP, dec0, dec1)
 
         usdc_per_eth = None
-        if _is_usdc(sym1) and _is_eth(sym0):
-            usdc_per_eth = p_t1_t0
-        elif _is_usdc(sym0) and _is_eth(sym1):
-            usdc_per_eth = (0.0 if p_t1_t0 == 0 else 1.0 / p_t1_t0)
+        if _is_usdc(sym1) and _is_eth(sym0): usdc_per_eth = p_t1_t0
+        elif _is_usdc(sym0) and _is_eth(sym1): usdc_per_eth = (0.0 if p_t1_t0 == 0 else 1.0/p_t1_t0)
 
-        # determinar se token_in é WETH/ETH ou USDC
-        in_sym = ad.erc20(req.token_in).functions.symbol().call()
+        in_sym = ad_vault.erc20(req.token_in).functions.symbol().call()
         if _is_eth(in_sym):
             if not usdc_per_eth:
-                raise HTTPException(400, "Não foi possível obter USDC/ETH a partir do pool do vault.")
-            # USD -> WETH:  amount_eth = USD / (USDC/ETH)
+                raise HTTPException(400, "Não foi possível obter USDC/ETH a partir do pool Uniswap de swap.")
             amount_in_token = float(req.amount_in_usd) / float(usdc_per_eth)
             amount_in_raw = int(amount_in_token * (10 ** dec_in))
             resolved_mode = "usd"
         elif _is_usdc(in_sym):
-            # USD -> USDC é 1:1
             amount_in_raw = int(float(req.amount_in_usd) * (10 ** dec_in))
             resolved_mode = "usd"
         else:
@@ -1570,97 +1642,160 @@ def swap_exact_in(alias: str, req: SwapExactInRequest):
     if amount_in_raw <= 0:
         raise HTTPException(400, "amount_in deve ser > 0")
 
-
-    # sanity: vault balance
-    bal_in = int(ad.erc20(req.token_in).functions.balanceOf(v["address"]).call())
+    # 6) sanity: balance do VAULT
+    bal_in = int(ad_vault.erc20(req.token_in).functions.balanceOf(v["address"]).call())
     if bal_in < amount_in_raw:
         raise HTTPException(400, f"insufficient vault balance: have {bal_in}, need {amount_in_raw}")
 
-    # First call the quote endpoint function to auto-pick fee
+    # 7) Quote Uniswap com o pool específico
     fee = int(req.fee) if req.fee is not None else None
-    quote = swap_quote(dex, alias, SwapQuoteRequest(
+    quote = swap_quote(alias, SwapQuoteRequest(
         alias=alias,
         token_in=req.token_in,
         token_out=req.token_out,
         amount_in=(float(req.amount_in) if resolved_mode=="token" else float(amount_in_raw) / (10 ** dec_in)),
         fee=fee,
-        sqrt_price_limit_x96=req.sqrt_price_limit_x96
+        sqrt_price_limit_x96=req.sqrt_price_limit_x96,
+        pool_override=req.pool_override,
     ))
     fee_used = int(quote["best_fee"])
     amount_out_raw = int(quote["amount_out_raw"])
     if amount_out_raw <= 0:
         raise HTTPException(400, "quoter returned 0")
-    
-    # slippage
+
+    # 8) slippage
     bps = max(0, int(req.slippage_bps))
     min_out_raw = amount_out_raw * (10_000 - bps) // 10_000
 
-    fn = ad.fn_vault_swap_exact_in(
+    # 9) tx: vault.swapExactIn(UNI_ROUTER, ...)
+    fn = ad_uni.fn_vault_swap_exact_in(
         router=s.UNI_V3_ROUTER,
         token_in=req.token_in,
         token_out=req.token_out,
         fee=fee_used,
         amount_in_raw=amount_in_raw,
         min_out_raw=min_out_raw,
-        sqrt_price_limit_x96=int(req.sqrt_price_limit_x96 or 0),
+        sqrt_price_limit_x96=int(req.sqrt_price_limit_x96 or 0)
     )
 
+    eth_usd_hint = estimate_eth_usd_from_pool(ad_uni)  # dica de USD via pool do swap
     txs = TxService(v.get("rpc_url"))
-    txh = txs.send(fn)
 
-    # Real gas spent
-    gas_used = eff_price_wei = gas_eth = gas_usd = None
     try:
-        rcpt = ad.w3.eth.wait_for_transaction_receipt(txh)
-        gas_used = int(rcpt["gasUsed"])
-        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
-        if eff_price_wei and gas_used:
-            gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
-            meta2 = ad.pool_meta()
-            sym0b, sym1b = meta2["sym0"].upper(), meta2["sym1"].upper()
-            dec0b, dec1b = int(meta2["dec0"]), int(meta2["dec1"])
-            sqrtPb, _ = ad.slot0()
-            p_t1_t0b = sqrtPriceX96_to_price_t1_per_t0(sqrtPb, dec0b, dec1b)
-            if _is_usdc(sym1b) and _is_eth(sym0b):
-                gas_usd = gas_eth * p_t1_t0b
-            elif _is_usdc(sym0b) and _is_eth(sym1b):
-                gas_usd = gas_eth * (0 if p_t1_t0b == 0 else 1.0 / p_t1_t0b)
-    except Exception:
-        pass
+        send_res = txs.send(
+            fn,
+            wait=True,
+            gas_strategy="buffered",
+            max_gas_usd=req.max_budget_usd,
+            eth_usd_hint=eth_usd_hint,
+        )
+    except TransactionBudgetExceededError as e:
+        payload = {
+            "tx_hash": None,
+            "broadcasted": False,
+            "status": None,
+            "error_type": "BUDGET_EXCEEDED",
+            "error_msg": "Gas cost upper bound is above allowed max_gas_usd",
+            "budget_info": {
+                "usd_budget": e.usd_budget,
+                "usd_estimated_upper_bound": e.usd_estimated,
+                "eth_usd_hint": e.eth_usd,
+                "gas_price_wei": e.gas_price_wei,
+                "est_gas_limit": e.est_gas_limit,
+            },
+        }
+        state_repo.append_history(dex_for_swap, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "swap_exact_in_failed_budget_uniswap",
+            "payload": payload,
+        })
+        raise HTTPException(status_code=400, detail=payload)
 
-    # history
-    state_repo.append_history(dex, alias, "exec_history", {
+    except TransactionRevertedError as e:
+        rcpt = e.receipt or {}
+        gas_used = int(rcpt.get("gasUsed") or 0)
+        eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+        gas_eth = gas_usd = None
+        if gas_used and eff_price_wei and eth_usd_hint:
+            gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
+            gas_usd = gas_eth * float(eth_usd_hint)
+
+        payload = {
+            "tx_hash": e.tx_hash,
+            "broadcasted": True,
+            "status": 0,
+            "error_type": "ONCHAIN_REVERT",
+            "error_msg": e.msg,
+            "receipt": rcpt,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": eff_price_wei,
+            "gas_eth": gas_eth,
+            "gas_usd": gas_usd,
+        }
+        state_repo.append_history(dex_for_swap, alias, "exec_history", {
+            "ts": datetime.utcnow().isoformat(),
+            "mode": "swap_exact_in_failed_revert_uniswap",
+            "payload": payload,
+        })
+        raise HTTPException(status_code=502, detail=payload)
+
+    rcpt = send_res["receipt"] or {}
+    gas_used = int(rcpt.get("gasUsed") or 0)
+    eff_price_wei = int(rcpt.get("effectiveGasPrice") or 0)
+
+    gas_eth = gas_usd = None
+    if gas_used and eff_price_wei and eth_usd_hint:
+        gas_eth = float((Decimal(gas_used) * Decimal(eff_price_wei)) / Decimal(10**18))
+        gas_usd = gas_eth * float(eth_usd_hint)
+
+    # 10) snapshot pós
+    try:
+        after = snapshot_status(ad_vault, vault_dex, alias)
+    except Exception:
+        after = {"warning": "status_unavailable_for_this_dex"}
+
+    # 11) histórico + retorno padronizado (mesmo shape do Aerodrome)
+    state_repo.append_history(dex_for_swap, alias, "exec_history", {
         "ts": datetime.utcnow().isoformat(),
-        "mode": "swap_exact_in",
+        "mode": "swap_exact_in_uniswap",
         "token_in": req.token_in,
         "token_out": req.token_out,
-        "resolved_amount_mode": resolved_mode,  # "token" ou "usd"
+        "resolved_amount_mode": resolved_mode,
         "amount_in_raw": amount_in_raw,
         "min_out_raw": min_out_raw,
         "fee_used": fee_used,
         "slippage_bps": bps,
-        "tx": txh,
+        "tx": send_res["tx_hash"],
         "gas_used": gas_used,
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
+        "gas_budget_check": send_res.get("gas_budget_check"),
+        "send_res": send_res,
         "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
+        "pool_used": pool_uni,
     })
 
     return {
-        "tx": txh,
-        "fee_used": fee_used,
-        "resolved_amount_mode": resolved_mode,
+        "tx": send_res["tx_hash"],
+        "tick_spacing_used": fee_used,                # alias p/ manter mesmo nome
+        "resolved_amount_mode": resolved_mode,        # "token" | "usd"
         "amount_in_raw": amount_in_raw,
         "quoted_out_raw": amount_out_raw,
         "min_out_raw": min_out_raw,
+        "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
         "gas_used": gas_used,
         "effective_gas_price_wei": eff_price_wei,
-        "effective_gas_price_gwei": (float(eff_price_wei)/1e9 if eff_price_wei else None),
         "gas_eth": gas_eth,
         "gas_usd": gas_usd,
-        "value_at_sqrt_after_usd": quote["value_at_sqrt_after_usd"],
+        "budget": send_res.get("gas_budget_check"),
+        "before": before,
+        "after": after,
+        "send_res": send_res,
+        "pool_used": pool_uni,
     }
+
 
 @router.post("/vaults/aerodrome/{alias}/swap/quote")
 def aero_swap_quote(alias: str, req: SwapQuoteRequest):
