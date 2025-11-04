@@ -946,8 +946,22 @@
   "error_history": [],
   "vault_initial_usd": 0.0,
   "rewards_usdc_cum": {
-    "usdc_raw": 0,
-    "usdc_human": 0.0
+    "usdc_raw": 9049,
+    "usdc_human": 0.009049
   },
-  "rewards_collect_history": []
+  "rewards_collect_history": [
+    {
+      "ts": "2025-11-04T04:12:00.693768",
+      "usdc_raw": 9049,
+      "usdc_human": 0.009049,
+      "meta": {
+        "tx_hash": "7b3697c07ffe5f5bf0512f1ddc7dcbd66283649758a7fd216b7e91d85fa1cb0a",
+        "token_in": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+        "token_out": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "pool_used": "0xE5B5f522E98B5a2baAe212d4dA66b865B781DB97",
+        "fee_used": 500,
+        "mode": "swap_reward_aero_to_usdc"
+      }
+    }
+  ]
 }

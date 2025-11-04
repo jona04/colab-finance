@@ -1,5 +1,6 @@
 from decimal import Decimal
 import json
+import logging
 import time
 from pathlib import Path
 from datetime import datetime
@@ -1777,6 +1778,28 @@ def swap_exact_in(alias: str, req: SwapExactInRequest):
         "pool_used": pool_uni,
     })
 
+    try:
+        # dec_out já definido anteriormente
+        usdc_raw   = int(amount_out_raw)
+        usdc_human = float(usdc_raw) / (10 ** dec_out)
+
+        state_repo.add_rewards_usdc_snapshot(
+            dex=vault_dex,          # DEX real do vault (ex: "aerodrome")
+            alias=alias,
+            usdc_raw=usdc_raw,
+            usdc_human=usdc_human,
+            meta={
+                "tx_hash": send_res["tx_hash"],
+                "token_in": req.token_in,
+                "token_out": req.token_out,
+                "pool_used": pool_uni,
+                "fee_used": fee_used,
+                "mode": "swap_reward_aero_to_usdc",
+            }
+        )
+    except Exception as e:
+        logging.warning(f"Failed to add rewards_usdc_snapshot: {e}")
+    
     return {
         "tx": send_res["tx_hash"],
         "tick_spacing_used": fee_used,                # alias p/ manter mesmo nome
@@ -1794,6 +1817,10 @@ def swap_exact_in(alias: str, req: SwapExactInRequest):
         "after": after,
         "send_res": send_res,
         "pool_used": pool_uni,
+        "rewards_added": {
+            "usdc_raw": usdc_raw,
+            "usdc_human": usdc_human
+        }
     }
 
 
