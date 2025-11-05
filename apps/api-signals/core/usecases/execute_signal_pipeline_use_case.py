@@ -267,7 +267,7 @@ class ExecuteSignalPipelineUseCase:
                             )
                             
                             res = await self._lp.post_swap_exact_in(
-                                dex=dex,
+                                dex=dex if dex == "pancake" else "uniswap",
                                 alias=alias,
                                 token_in=reward_token,
                                 token_out=token1_addr,
