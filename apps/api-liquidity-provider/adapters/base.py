@@ -8,11 +8,12 @@ class DexAdapter(ABC):
     One concrete instance per-vault (it can capture rpc_url, pool, nfpm, vault).
     """
 
-    def __init__(self, w3: Web3, pool: str, nfpm: Optional[str], vault: str):
+    def __init__(self, w3: Web3, pool: str, nfpm: Optional[str], vault: str, gauge: Optional[str] = None):
         self.w3 = w3
         self.pool = Web3.to_checksum_address(pool) if pool else None
         self.nfpm = Web3.to_checksum_address(nfpm) if nfpm else None
         self.vault = self.w3.eth.contract(address=Web3.to_checksum_address(vault), abi=self.vault_abi())
+        self.gauge = Web3.to_checksum_address(gauge) if gauge else None
 
     # ---------- ABI providers ----------
     @abstractmethod

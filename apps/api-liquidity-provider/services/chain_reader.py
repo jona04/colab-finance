@@ -134,37 +134,57 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
 
     if has_gauge and token_id != 0 and is_staked:
         try:
-            gauge = adapter.gauge_contract()
+            if dex == "pancake":
+                # MasterChefV3 (Pancake)
+                mc = adapter.gauge_contract()
+                if mc is not None:
+                    pending_raw = int(mc.functions.pendingCake(int(token_id)).call())
+                    reward_token_addr = mc.functions.CAKE().call()
+                    erc = adapter.erc20(reward_token_addr)
+                    r_sym = erc.functions.symbol().call()
+                    r_dec = int(erc.functions.decimals().call())
+                    pending_h = float(pending_raw) / (10 ** r_dec)
+                    usd_est = pending_h if (r_sym.upper() in USD_SYMBOLS or _is_stable_addr(reward_token_addr)) else None
 
-            adapter_onchain_addr = adapter.adapter_address()  # vamos adicionar isso (ver item 4)
+                    gauge_rewards_block = {
+                        "reward_token": reward_token_addr,
+                        "reward_symbol": r_sym,
+                        "pending_raw": pending_raw,
+                        "pending_amount": pending_h,
+                        "pending_usd_est": (float(usd_est) if usd_est is not None else None),
+                    }
+            else:
+                gauge = adapter.gauge_contract()
 
-            pending_raw = gauge.functions.earned(
-                Web3.to_checksum_address(adapter_onchain_addr),
-                token_id
-            ).call()
+                adapter_onchain_addr = adapter.adapter_address()  # vamos adicionar isso (ver item 4)
 
-            reward_token_addr = gauge.functions.rewardToken().call()
+                pending_raw = gauge.functions.earned(
+                    Web3.to_checksum_address(adapter_onchain_addr),
+                    token_id
+                ).call()
 
-            erc20 = adapter.erc20_contract()
+                reward_token_addr = gauge.functions.rewardToken().call()
 
-            reward_symbol = erc20.functions.symbol().call()
-            reward_dec    = erc20.functions.decimals().call()
+                erc20 = adapter.erc20_contract()
 
-            pending_human = float(pending_raw) / (10 ** reward_dec)
+                reward_symbol = erc20.functions.symbol().call()
+                reward_dec    = erc20.functions.decimals().call()
 
-            # tentativa de "usd_est": se reward é estável tipo USDC, trata 1:1
-            usd_est = None
-            if reward_symbol.upper() in USD_SYMBOLS or _is_stable_addr(reward_token_addr):
-                usd_est = pending_human
-            # se for AERO/WETH etc, você pode deixar None agora e calcular depois
+                pending_human = float(pending_raw) / (10 ** reward_dec)
 
-            gauge_rewards_block = {
-                "reward_token": reward_token_addr,
-                "reward_symbol": reward_symbol,
-                "pending_raw": int(pending_raw),
-                "pending_amount": pending_human,
-                "pending_usd_est": (float(usd_est) if usd_est is not None else None),
-            }
+                # tentativa de "usd_est": se reward é estável tipo USDC, trata 1:1
+                usd_est = None
+                if reward_symbol.upper() in USD_SYMBOLS or _is_stable_addr(reward_token_addr):
+                    usd_est = pending_human
+                # se for AERO/WETH etc, você pode deixar None agora e calcular depois
+
+                gauge_rewards_block = {
+                    "reward_token": reward_token_addr,
+                    "reward_symbol": reward_symbol,
+                    "pending_raw": int(pending_raw),
+                    "pending_amount": pending_human,
+                    "pending_usd_est": (float(usd_est) if usd_est is not None else None),
+                }
         except Exception as e:
             gauge_rewards_block = {
                 "error": f"gauge_read_failed: {str(e)}"

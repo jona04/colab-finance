@@ -99,7 +99,7 @@ def estimate_eth_usd_from_pool(ad) -> float | None:
 
     return None
 
-def resolve_uniswap_pool_from_vault(v: dict, pool_override: Optional[str]) -> str:
+def resolve_pool_from_vault(v: dict, pool_override: Optional[str]) -> str:
     """
     Retorna o endereço do pool Uniswap (checksum).
     - Se pool_override é "0x..." => usa direto.
@@ -112,8 +112,6 @@ def resolve_uniswap_pool_from_vault(v: dict, pool_override: Optional[str]) -> st
         sp = (v.get("swap_pools") or {}).get(pool_override)
         if not sp:
             raise HTTPException(400, f"swap_pools key not found: {pool_override}")
-        if str(sp.get("dex")).lower() != "uniswap":
-            raise HTTPException(400, "pool_override dex must be 'uniswap'")
         return Web3.to_checksum_address(sp["pool"])
 
     # default: tente "AERO_USDC"

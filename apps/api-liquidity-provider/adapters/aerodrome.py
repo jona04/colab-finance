@@ -161,16 +161,8 @@ class AerodromeAdapter(DexAdapter):
             raise RuntimeError("AMM: nenhuma rota viável (getAmountsOut)")
         return best
 
-    def gauge_address(self) -> Optional[str]:
-        try:
-            g = self.pool_contract().functions.gauge().call()
-            if int(g, 16) == 0: return None
-            return Web3.to_checksum_address(g)
-        except Exception:
-            return None
-
     def gauge_contract(self):
-        g = self.gauge_address()
+        g = self.gauge
         return self.w3.eth.contract(address=g, abi=self.gauge_impl_abi()) if g else None
 
     def adapter_contract(self):
@@ -371,7 +363,7 @@ class AerodromeAdapter(DexAdapter):
                 pass
 
         # --- gauge & staked
-        g_addr = self.gauge_address()
+        g_addr = self.gauge
         has_gauge = bool(g_addr)
         staked = False
         if has_gauge and token_id:

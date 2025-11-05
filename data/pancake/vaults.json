@@ -1,0 +1,35 @@
+{
+  "active": "pancake2",
+  "vaults": {
+    "pancake1": {
+      "address": "0x0834f72487323142A0e3C583f492518CB27EA539",
+      "adapter": "0x9280c3aF54099d370f6Cbcf7A7CaD3CC851963d0",
+      "pool": "0x72AB388E2E2F6FaceF59E3C3FA2C4E29011c2D38",
+      "nfpm": "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
+      "gauge": "0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3",
+      "rpc_url": "https://base-mainnet.infura.io/v3/079d35a3c196469191c9accc1d68d25b",
+      "version": "v2",
+      "swap_pools": {
+        "WETH_USDC": {
+          "dex": "aerodrome",
+          "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1"
+        }
+      }
+    },
+    "pancake2": {
+      "address": "0x79c8e8B6fD2d1F50D4DDEE00368b97128587149B",
+      "adapter": "0xd2166a591FAa142797D0f6fe135cb7ef02Be214F",
+      "pool": "0x72AB388E2E2F6FaceF59E3C3FA2C4E29011c2D38",
+      "nfpm": "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
+      "gauge": "0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3",
+      "rpc_url": "https://base-mainnet.infura.io/v3/079d35a3c196469191c9accc1d68d25b",
+      "version": "v2",
+      "swap_pools": {
+        "WETH_USDC": {
+          "dex": "aerodrome",
+          "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1"
+        }
+      }
+    }
+  }
+}

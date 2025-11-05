@@ -71,7 +71,7 @@ contract SingleUserVaultV2 is Ownable, ReentrancyGuard {
         require(poolSet, "no pool");
 
         (address token0, address token1) = adapter.tokens();
-        address spender = address(adapter); // <- o adapter vai puxar via transferFrom
+        address spender = address(adapter);
         uint256 bal0 = IERC20(token0).balanceOf(address(this));
         uint256 bal1 = IERC20(token1).balanceOf(address(this));
         

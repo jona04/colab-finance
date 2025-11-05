@@ -60,4 +60,7 @@ def get_vault_any(alias: str):
     v = get_vault("aerodrome", alias)
     if v:
         return "aerodrome", v
+    v = get_vault("pancake", alias)
+    if v:
+        return "pancake", v
     return None, None

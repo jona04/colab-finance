@@ -25,9 +25,9 @@ contract UniV3Adapter is IConcentratedLiquidityAdapter {
     address public immutable override gauge; // always zero for Uniswap
 
     // --- guard params (copiados do V1 para manter comportamento) ---
-    uint256 public minCooldown = 30 minutes;
-    int24   public minWidth    = 60;
-    int24   public maxWidth    = 200_000;
+    uint256 public minCooldown = 1 minutes;
+    int24   public minWidth    = 30;
+    int24   public maxWidth    = 900_000;
     int24   public maxTwapDeviationTicks = 50; // ~0.5%
     uint32  public twapWindow  = 60;
 
