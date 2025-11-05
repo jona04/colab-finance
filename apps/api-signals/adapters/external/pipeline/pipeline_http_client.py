@@ -73,6 +73,8 @@ class PipelineHttpClient:
         token_out: str,
         amount_in: Optional[float] = None,
         amount_in_usd: Optional[float] = None,
+        convert_gauge_to_usdc: Optional[bool] = False,
+        pool_override: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/{dex}/{alias}/swap/exact-in
@@ -90,6 +92,8 @@ class PipelineHttpClient:
             "token_out": token_out,
             "amount_in": amount_in,
             "amount_in_usd": amount_in_usd,
+            "convert_gauge_to_usdc": convert_gauge_to_usdc,
+            "pool_override": pool_override
         }
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -211,7 +215,7 @@ class PipelineHttpClient:
         body: { "token_id": int|null }
         """
         url = f"{self._base_url}/api/vaults/{dex}/{alias}/stake"
-        payload = {"token_id": token_id}
+        payload = {}
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 r = await client.post(url, json=payload)

@@ -146,6 +146,10 @@ class StrategyReconcilerService:
             if gauge_flow:
                 # fluxo com gauge
                 steps.append({"action": "UNSTAKE", "payload": {"dex": dex, "alias": alias}})
+                steps.append({"action": "SWAP_EXACT_IN_REWARD", "payload": {"dex": dex, "alias": alias,
+                                                                        "lower_price": Pa_des, "upper_price": Pb_des}})  
+                if dex == "pancake":
+                    steps.append({"action": "COLLECT", "payload": {"dex": dex, "alias": alias}})                  
                 steps.append({"action": "WITHDRAW", "payload": {"dex": dex, "alias": alias, "mode": "pool"}})
                 steps.append({"action": "SWAP_EXACT_IN", "payload": {"dex": dex, "alias": alias,
                                                                      "lower_price": Pa_des, "upper_price": Pb_des}})
@@ -153,7 +157,6 @@ class StrategyReconcilerService:
                                                             "lower_price": Pa_des, "upper_price": Pb_des}})
                 steps.append({"action": "STAKE", "payload": {"dex": dex, "alias": alias}})
             else:
-                # fluxo sem gauge (mantém COLLECT como antes)
                 steps.append({"action": "COLLECT", "payload": {"dex": dex, "alias": alias}})
                 steps.append({"action": "WITHDRAW", "payload": {"dex": dex, "alias": alias, "mode": "pool"}})
                 steps.append({"action": "SWAP_EXACT_IN", "payload": {"dex": dex, "alias": alias,

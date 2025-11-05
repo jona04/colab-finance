@@ -239,6 +239,76 @@ class ExecuteSignalPipelineUseCase:
                             
                         success = True
 
+                    elif action == "SWAP_EXACT_IN_REWARD":
+                        # after withdraw, capital is idle in vault.
+                        st = await self._lp.get_status(dex, alias)
+                        if not st:
+                            raise RuntimeError("status_unavailable_before_swap")
+                        
+                        gauge_reward_balances = st.get("gauge_reward_balances", {}) or {}
+                        reward_token = gauge_reward_balances.get("token", None)
+                        reward_symbol = gauge_reward_balances.get("symbol", None)
+                        reward_in_vault = gauge_reward_balances.get("in_vault", 0.0)
+                        reward_in_vault_to_swap = reward_in_vault - 0.000001
+                        
+                        if reward_token and reward_symbol and reward_in_vault > 0:
+                            # log snapshot BEFORE swap calc
+                            await self._append_log(
+                                episode_id,
+                                {
+                                    "step": action,
+                                    "phase": "pre_calc",
+                                    "attempt": attempt + 1,
+                                    "reward_token": reward_token,
+                                    "reward_symbol": reward_symbol,
+                                    "reward_in_vault": reward_in_vault,
+                                    "reward_in_vault_to_swap": reward_in_vault_to_swap
+                                },
+                            )
+                            
+                            res = await self._lp.post_swap_exact_in(
+                                dex=dex,
+                                alias=alias,
+                                token_in=reward_token,
+                                token_out=token1_addr,
+                                amount_in=reward_in_vault_to_swap,
+                                pool_override="CAKE_USDC" if dex == "pancake" else "AERO_USDC",
+                                convert_gauge_to_usdc=True
+                            )
+                                
+                            await self._append_log(
+                                episode_id,
+                                {
+                                    "step": action,
+                                    "phase": "swap_call",
+                                    "attempt": attempt + 1,
+                                    "request": {
+                                        "token_in": reward_token,
+                                        "token_out": token1_addr,
+                                        "amount_in_usd": reward_in_vault_to_swap,
+                                    },
+                                    "response": res,
+                                },
+                            )
+
+                            if res is None:
+                                raise RuntimeError("swap_failed")
+
+                            success = True
+                        else:
+                            await self._append_log(
+                                episode_id,
+                                    {
+                                        "step": action,
+                                        "phase": "skip_small",
+                                        "attempt": attempt + 1,
+                                        "reward_token": reward_token,
+                                        "reward_symbol": reward_symbol,
+                                        "reward_in_vault": reward_in_vault
+                                    },
+                                )
+                            success = True
+                            
                     elif action == "SWAP_EXACT_IN":
                         # after withdraw, capital is idle in vault.
                         st = await self._lp.get_status(dex, alias)
@@ -368,12 +438,13 @@ class ExecuteSignalPipelineUseCase:
                                 success = True
                             else:
                                 res = await self._lp.post_swap_exact_in(
-                                    dex=dex,
+                                    dex="aerodrome", # todas as pools sao WETH/USDC, entao o swap sempre aerodrome com fee 0.0008
                                     alias=alias,
                                     token_in=token_in_addr,
                                     token_out=token_out_addr,
                                     amount_in_usd=req_amount_usd if direction == "WETH->USDC" else None,
-                                    amount_in=req_amount_usd if direction == "USDC->WETH" else None
+                                    amount_in=req_amount_usd if direction == "USDC->WETH" else None,
+                                    pool_override="WETH_USDC" if dex == "pancake" else None
                                 )
 
                                 await self._append_log(
