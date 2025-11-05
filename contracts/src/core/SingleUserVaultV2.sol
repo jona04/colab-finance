@@ -8,6 +8,7 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 import "../interfaces/IConcentratedLiquidityAdapter.sol";
 import {ISwapRouterV3Minimal} from "../interfaces/ISwapRouterV3Minimal.sol";
 import {IAeroRouter} from "../interfaces/IAeroRouter.sol";
+import {ISwapRouterV3Pancake} from "../interfaces/ISwapRouterV3Pancake.sol";
 
 /**
  * @title SingleUserVaultV2
@@ -215,6 +216,38 @@ contract SingleUserVaultV2 is Ownable, ReentrancyGuard {
         });
 
         amountOut = IAeroRouter(router).exactInputSingle{value: 0}(p);
+
+        IERC20(tokenIn).forceApprove(router, 0);
+        emit Swapped(router, tokenIn, tokenOut, amountIn, amountOut);
+    }
+
+    function swapExactInPancake(
+        address router,
+        address tokenIn,
+        address tokenOut,
+        uint24  fee,
+        uint256 amountIn,
+        uint256 amountOutMinimum,
+        uint160 sqrtPriceLimitX96
+    ) external onlyOwner nonReentrant returns (uint256 amountOut) {
+        require(router != address(0), "router=0");
+        require(amountIn > 0, "amountIn=0");
+
+        _approveIfNeeded(tokenIn, router, amountIn);
+
+        ISwapRouterV3Pancake.ExactInputSingleParams memory p =
+            ISwapRouterV3Pancake.ExactInputSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                fee: fee,
+                recipient: address(this),
+                deadline: block.timestamp + 900,
+                amountIn: amountIn,
+                amountOutMinimum: amountOutMinimum,
+                sqrtPriceLimitX96: sqrtPriceLimitX96
+            });
+
+        amountOut = ISwapRouterV3Pancake(router).exactInputSingle{value: 0}(p);
 
         IERC20(tokenIn).forceApprove(router, 0);
         emit Swapped(router, tokenIn, tokenOut, amountIn, amountOut);

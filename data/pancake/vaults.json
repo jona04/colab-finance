@@ -1,5 +1,5 @@
 {
-  "active": "pancake2",
+  "active": "pancake3",
   "vaults": {
     "pancake1": {
       "address": "0x0834f72487323142A0e3C583f492518CB27EA539",
@@ -28,6 +28,29 @@
         "WETH_USDC": {
           "dex": "aerodrome",
           "pool": "0xdbc6998296caa1652a810dc8d3baf4a8294330f1"
+        },
+        "CAKE_USDC": {
+          "dex": "pancake",
+          "pool": "0xBf1713B92F4212F0fAC0078e2cea7E182D40078B"
+        }
+      }
+    },
+    "pancake3": {
+      "address": "0x2966e469f2751A437b3cE6B306F9d764617dE5aB",
+      "adapter": "0x4513399C349aD2F5a3796b318930ffBb717370aB",
+      "pool": "0x72AB388E2E2F6FaceF59E3C3FA2C4E29011c2D38",
+      "nfpm": "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
+      "gauge": "0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3",
+      "rpc_url": "https://base-mainnet.infura.io/v3/079d35a3c196469191c9accc1d68d25b",
+      "version": "v2",
+      "swap_pools": {
+        "WETH_USDC": {
+          "dex": "aerodrome",
+          "pool": "0xdbc6998296caA1652A810dc8D3BaF4A8294330f1"
+        },
+        "CAKE_USDC": {
+          "dex": "pancake",
+          "pool": "0xBf1713B92F4212F0fAC0078e2cea7E182D40078B"
         }
       }
     }

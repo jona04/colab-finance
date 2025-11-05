@@ -42,7 +42,7 @@ ABI_VAULT = [
     {"name":"stake", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
     {"name":"unstake", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
     {"name":"claimRewards", "outputs":[], "inputs":[], "stateMutability": "nonpayable","type":"function"},
-    {"name":"swapExactIn","outputs":[{"type":"uint256"}],"inputs":[
+    {"name":"swapExactInPancake","outputs":[{"type":"uint256"}],"inputs":[
         {"type":"address","name":"router"},
         {"type":"address","name":"tokenIn"},
         {"type":"address","name":"tokenOut"},
@@ -223,7 +223,7 @@ class PancakeV3Adapter(DexAdapter):
                                fee: int, amount_in_raw: int, min_out_raw: int,
                                sqrt_price_limit_x96: int = 0):
         # reusa a mesma função do VaultV2 (idêntica ao Uniswap)
-        return self.vault.functions.swapExactIn(
+        return self.vault.functions.swapExactInPancake(
             Web3.to_checksum_address(router),
             Web3.to_checksum_address(token_in),
             Web3.to_checksum_address(token_out),

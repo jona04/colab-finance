@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Body
 from web3 import Web3
 
 from ..config import get_settings
-from ..routes.utils import estimate_eth_usd_from_pool, resolve_pool_from_vault, snapshot_status, tick_spacing_candidates
+from ..routes.utils import ZERO_ADDR, estimate_eth_usd_from_pool, normalize_swap_pools_input, resolve_pool_from_vault, snapshot_status, tick_spacing_candidates
 
 from ..domain.swap import SwapExactInRequest, SwapQuoteRequest
 from ..domain.models import (
@@ -962,6 +962,8 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
     # -------- owner/source account --------
     owner = Web3.to_checksum_address(req.owner) if req.owner else txs.sender_address()
 
+    normalized_swap_pools = normalize_swap_pools_input(dex, req.swap_pools)
+    
     # 1) Deploy adapter conforme DEX
     if dex == "uniswap":
         adapter_art_path = Path("contracts/out/UniV3Adapter.sol/UniV3Adapter.json")
@@ -994,9 +996,11 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
             raise HTTPException(501, "Adapter artifact (Pancake) not found")
         aart = json.loads(adapter_art_path.read_text())
         aabi = aart["abi"]; abyte = aart["bytecode"]["object"] if isinstance(aart["bytecode"], dict) else aart["bytecode"]
-        ctor = [Web3.to_checksum_address(req.pool), Web3.to_checksum_address(req.nfpm)]
-        if req.gauge: # gauge é o masterchef address
-            ctor.append(Web3.to_checksum_address(req.gauge))
+        ctor = [
+            Web3.to_checksum_address(req.pool),
+            Web3.to_checksum_address(req.nfpm),
+            Web3.to_checksum_address(req.gauge) if req.gauge else Web3.to_checksum_address(ZERO_ADDR),
+        ]
         adapter_res = txs.deploy(abi=aabi, bytecode=abyte, ctor_args=ctor, wait=True)
         adapter_addr = adapter_res["address"]
         
@@ -1019,16 +1023,6 @@ def deploy_vault(dex: str, req: DeployVaultRequest):
         txs.send(vault.functions.setPoolOnce(Web3.to_checksum_address(adapter_addr)), wait=True)
     except Exception as e:
         raise HTTPException(500, f"setPoolOnce failed: {e}")
-
-    normalized_swap_pools = {}
-    if req.swap_pools:
-        for k, ref in req.swap_pools.items():
-            if isinstance(ref, dict):
-                # já no formato novo vindo do Pydantic (dex/pool)
-                normalized_swap_pools[k] = {"dex": ref["dex"], "pool": Web3.to_checksum_address(ref["pool"])}
-            else:
-                # fallback: veio como string (somente address) -> assume DEX do pedido atual
-                normalized_swap_pools[k] = {"dex": dex, "pool": Web3.to_checksum_address(str(ref))}
 
     # 4) registry/state
     vault_repo.add_vault(dex, req.alias, {
@@ -1826,27 +1820,38 @@ def swap_exact_in(alias: str, req: SwapExactInRequest):
         "pool_used": pool_uni,
     })
 
-    try:
-        # dec_out já definido anteriormente
-        usdc_raw   = int(amount_out_raw)
-        usdc_human = float(usdc_raw) / (10 ** dec_out)
+    rewards_added = None
+    if req.convert_gauge_to_usdc:
+        try:
+            # dec_out já calculado acima e amount_out_raw obtido do quote Uniswap
+            usdc_raw   = int(amount_out_raw)
+            usdc_human = float(usdc_raw) / (10 ** dec_out)
 
-        state_repo.add_rewards_usdc_snapshot(
-            dex=vault_dex,          # DEX real do vault (ex: "aerodrome")
-            alias=alias,
-            usdc_raw=usdc_raw,
-            usdc_human=usdc_human,
-            meta={
-                "tx_hash": send_res["tx_hash"],
-                "token_in": req.token_in,
-                "token_out": req.token_out,
-                "pool_used": pool_uni,
-                "fee_used": fee_used,
-                "mode": "swap_reward_aero_to_usdc",
-            }
-        )
-    except Exception as e:
-        logging.warning(f"Failed to add rewards_usdc_snapshot: {e}")
+            try:
+                in_sym  = ad_vault.erc20(req.token_in).functions.symbol().call()
+                out_sym = ad_vault.erc20(req.token_out).functions.symbol().call()
+            except Exception:
+                in_sym, out_sym = "IN", "OUT"
+
+            state_repo.add_rewards_usdc_snapshot(
+                dex=vault_dex,          # DEX real do vault (pode ser uniswap/aerodrome/pancake)
+                alias=alias,
+                usdc_raw=usdc_raw,
+                usdc_human=usdc_human,
+                meta={
+                    "tx_hash": send_res["tx_hash"],
+                    "token_in": req.token_in,
+                    "token_out": req.token_out,
+                    "token_in_symbol": in_sym,
+                    "token_out_symbol": out_sym,
+                    "pool_used": pool_uni,
+                    "fee_used": fee_used,
+                    "mode": "swap_reward_to_usdc_uniswap",
+                }
+            )
+            rewards_added = {"usdc_raw": usdc_raw, "usdc_human": usdc_human}
+        except Exception as e:
+            logging.warning(f"Failed to add rewards_usdc_snapshot (uniswap): {e}")
     
     return {
         "tx": send_res["tx_hash"],
@@ -1865,10 +1870,7 @@ def swap_exact_in(alias: str, req: SwapExactInRequest):
         "after": after,
         "send_res": send_res,
         "pool_used": pool_uni,
-        "rewards_added": {
-            "usdc_raw": usdc_raw,
-            "usdc_human": usdc_human
-        }
+        "rewards_added": rewards_added
     }
 
 @router.post("/vaults/aerodrome/{alias}/swap/quote")
@@ -2211,8 +2213,7 @@ def pancake_swap_quote(alias: str, req: SwapQuoteRequest):
         raise HTTPException(500, "PANCAKE_V3_QUOTER not configured")
 
     ad_vault = _adapter_for(vault_dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"), v.get("gauge"))
-    # Para Pancake, use o pool do próprio vault (ou req.pool_override se quiser)
-    pool_addr = Web3.to_checksum_address(req.pool_override) if req.pool_override else Web3.to_checksum_address(v["pool"])
+    pool_addr = resolve_pool_from_vault(v, req.pool_override)
     ad_pc = _adapter_for(dex_for_quote, pool_addr, None, v["address"], v.get("rpc_url"))
     quoter = ad_pc.quoter(s.PANCAKE_V3_QUOTER)
 
@@ -2301,7 +2302,7 @@ def pancake_swap_exact_in(alias: str, req: SwapExactInRequest):
     state_repo.ensure_state_initialized(vault_dex, alias, vault_address=v["address"])
 
     ad_vault = _adapter_for(vault_dex, v["pool"], v.get("nfpm"), v["address"], v.get("rpc_url"), v.get("gauge"))
-    pool_addr = Web3.to_checksum_address(req.pool_override) if req.pool_override else Web3.to_checksum_address(v["pool"])
+    pool_addr = resolve_pool_from_vault(v, req.pool_override)
     ad_pc   = _adapter_for(dex_for_swap, pool_addr, None, v["address"], v.get("rpc_url"))
 
     try: before = snapshot_status(ad_vault, vault_dex, alias)
@@ -2410,6 +2411,37 @@ def pancake_swap_exact_in(alias: str, req: SwapExactInRequest):
         "pool_used": quote.get("pool_used"),
     })
 
+    rewards_added = None
+    if req.convert_gauge_to_usdc:
+        try:
+            usdc_raw   = int(amount_out_raw)
+            usdc_human = float(usdc_raw) / (10 ** dec_out)
+            try:
+                in_sym  = ad_vault.erc20(req.token_in).functions.symbol().call()
+                out_sym = ad_vault.erc20(req.token_out).functions.symbol().call()
+            except Exception:
+                in_sym, out_sym = "IN", "OUT"
+
+            state_repo.add_rewards_usdc_snapshot(
+                dex=vault_dex,
+                alias=alias,
+                usdc_raw=usdc_raw,
+                usdc_human=usdc_human,
+                meta={
+                    "tx_hash": send_res["tx_hash"],
+                    "token_in": req.token_in,
+                    "token_out": req.token_out,
+                    "token_in_symbol": in_sym,
+                    "token_out_symbol": out_sym,
+                    "pool_used": quote.get("pool_used"),
+                    "fee_used": fee_used,
+                    "mode": "swap_reward_to_usdc_pancake",
+                }
+            )
+            rewards_added = {"usdc_raw": usdc_raw, "usdc_human": usdc_human}
+        except Exception as e:
+            logging.warning(f"Failed to add rewards_usdc_snapshot (pancake): {e}")
+            
     return {
         "tx": send_res["tx_hash"],
         "tick_spacing_used": fee_used,
@@ -2422,6 +2454,7 @@ def pancake_swap_exact_in(alias: str, req: SwapExactInRequest):
         "effective_gas_price_wei": eff_price_wei,
         "gas_eth": gas_eth, "gas_usd": gas_usd,
         "budget": send_res.get("gas_budget_check"),
-        "before": before, "after": after, "send_res": send_res
+        "before": before, "after": after, "send_res": send_res,
+        "rewards_added": rewards_added
     }
 

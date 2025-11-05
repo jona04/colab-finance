@@ -1,6 +1,7 @@
 
 
-from typing import Optional
+from typing import Any, Dict, Optional
+from pydantic import BaseModel
 
 from fastapi import HTTPException
 from web3 import Web3
@@ -9,6 +10,36 @@ from ..services.chain_reader import USD_SYMBOLS, compute_status, sqrtPriceX96_to
 from ..adapters.aerodrome import AerodromeAdapter
 from ..config import get_settings
 
+
+ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+ALLOWED_DEX = {"uniswap", "aerodrome", "pancake"}
+
+def normalize_swap_pools_input(dex_default: str, sp: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
+    out: Dict[str, Dict[str, str]] = {}
+    if not sp:
+        return out
+
+    for k, ref in sp.items():
+        if isinstance(ref, dict):
+            dex_val = ref.get("dex", dex_default)
+            pool_val = ref.get("pool")
+        elif isinstance(ref, BaseModel):  # Pydantic v2
+            data = ref.model_dump()
+            dex_val = data.get("dex", dex_default)
+            pool_val = data.get("pool")
+        else:
+            # modo legado: só endereço → assume DEX atual
+            dex_val = dex_default
+            pool_val = str(ref)
+
+        if dex_val not in ALLOWED_DEX:
+            raise HTTPException(400, f"swap_pools['{k}'].dex inválido: {dex_val}")
+
+        if not Web3.is_address(pool_val):
+            raise HTTPException(400, f"swap_pools['{k}'].pool inválido: {pool_val}")
+
+        out[k] = {"dex": dex_val, "pool": Web3.to_checksum_address(pool_val)}
+    return out
 
 def tick_spacing_candidates(ad: AerodromeAdapter) -> list[int]:
     # 1) tente spacings do .env

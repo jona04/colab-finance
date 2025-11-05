@@ -39,7 +39,7 @@ class DeployVaultRequest(BaseModel):
     dex: Literal["uniswap", "aerodrome", "pancake"]
     version: Literal["v1","v2"] = "v2"
     owner: Optional[str] = None            # se None, usamos SENDER_FROM_ENV do TxService
-    gauge: Optional[str] = None            # só Aerodrome (opcional)
+    gauge: Optional[str] = None           
     swap_pools: Optional[Dict[str, SwapPoolRef]] = None
     
 class OpenRequest(BaseModel):

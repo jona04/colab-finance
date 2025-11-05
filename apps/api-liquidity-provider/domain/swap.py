@@ -20,3 +20,4 @@ class SwapExactInRequest(BaseModel):
     slippage_bps: int = 50
     max_budget_usd: Optional[float] = None
     pool_override: Optional[str] = None
+    convert_gauge_to_usdc: bool = False

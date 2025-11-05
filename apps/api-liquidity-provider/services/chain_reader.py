@@ -132,7 +132,7 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
 
     gauge_rewards_block = None
 
-    if has_gauge and token_id != 0 and is_staked:
+    if has_gauge and token_id != 0:
         try:
             if dex == "pancake":
                 # MasterChefV3 (Pancake)
