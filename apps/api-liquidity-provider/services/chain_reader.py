@@ -113,7 +113,7 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
     dec0, dec1 = int(meta["dec0"]), int(meta["dec1"])
     sym0, sym1 = meta["sym0"], meta["sym1"]
     t0_addr, t1_addr = meta["token0"], meta["token1"]
-    spacing = int(meta["spacing"])
+    tickSpacing = int(meta["spacing"])
 
     # ---- slot0 and vault state
     sqrtP, tick = adapter.slot0()
@@ -329,7 +329,7 @@ def compute_status(adapter, dex, alias: str) -> StatusCore:
         tick=tick,
         lower=lower,
         upper=upper,
-        spacing=spacing,
+        spacing=tickSpacing,
         twap_ok=twap_ok,
         last_rebalance=last_rebalance,
         cooldown_remaining_seconds=cooldown_remaining_seconds,

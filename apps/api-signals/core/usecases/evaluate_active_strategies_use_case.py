@@ -85,7 +85,7 @@ class EvaluateActiveStrategiesUseCase:
                 majority = "token2"; mode = "trend_up"
                 pct_below_base = float(0.01)  # curto abaixo
                 pct_above_base = float(0.09)   # largo acima
-        elif pool_type == last_tier:
+        elif pool_type in [t['name'] for t in tiers]:
             if trend == "down":
                 majority = "token1"; mode = "trend_down"
                 pct_below_base = float(0.05)   # largo abaixo

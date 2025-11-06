@@ -115,8 +115,9 @@ class PancakeV3Adapter(DexAdapter):
         dec0 = int(e0.functions.decimals().call())
         dec1 = int(e1.functions.decimals().call())
         # fee() existe no Pancake v3 pool (Uniswap-like)
-        spacing_or_fee = int(pc.functions.fee().call())
-        return {"token0": t0, "token1": t1, "sym0": sym0, "sym1": sym1, "dec0": dec0, "dec1": dec1, "spacing": spacing_or_fee}
+        fee = int(pc.functions.fee().call())
+        tickSpacing = int(pc.functions.tickSpacing().call())
+        return {"token0": t0, "token1": t1, "sym0": sym0, "sym1": sym1, "dec0": dec0, "dec1": dec1, "fee": fee, "spacing": tickSpacing}
 
     def vault_state(self) -> Dict[str, Any]:
         token_id = 0
