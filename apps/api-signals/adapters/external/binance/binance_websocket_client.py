@@ -5,7 +5,7 @@ import random
 from typing import Awaitable, Callable, Optional
 
 import websockets
-
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 class BinanceWebsocketClient:
     """
@@ -71,22 +71,48 @@ class BinanceWebsocketClient:
         while not self._stop_event.is_set():
             try:
                 self._logger.info("Connecting WS: %s", url)
-                async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                # Ajustes críticos para hotspot / rede instável:
+                # - open_timeout: tempo para concluir handshake (padrão pode ser curto)
+                # - ping_interval/ping_timeout: mantenha a conexão viva e detecte quedas
+                # - close_timeout pequeno para não travar no fechamento
+                async with websockets.connect(
+                    url,
+                    open_timeout=30,
+                    close_timeout=5,
+                    ping_interval=15,
+                    ping_timeout=15,
+                    max_queue=1000,      # evita bloquear se der burst de mensagens
+                    max_size=None        # sem limite de payload
+                ) as ws:
                     self._logger.info("WS connected: %s", url)
-                    backoff = 1  # reset on successful connect
+                    backoff = 1  # reset do backoff
 
                     async for message in ws:
                         if self._stop_event.is_set():
                             break
                         await self._handle_message(message)
 
+            except asyncio.CancelledError:
+                # não engula cancelamento — deixe sair
+                raise
+
+            except (asyncio.TimeoutError,) as exc:
+                # timeout de conexão/handshake
+                self._logger.warning("WS timeout during handshake/connection: %s. Reconnecting...", exc)
+
+            except (ConnectionClosed, ConnectionClosedError) as exc:
+                # quedas normais/fechamento remoto
+                self._logger.warning("WS closed/error: %s. Reconnecting...", exc)
+
             except Exception as exc:
-                # Connection dropped or parse failure — backoff and retry
+                # quaisquer outras falhas (DNS/TLS/etc.)
                 self._logger.warning("WS error: %s. Reconnecting...", exc)
-                jitter = random.uniform(0, 0.5)
-                sleep_for = min(backoff, backoff_max) + jitter
-                await asyncio.sleep(sleep_for)
-                backoff = min(backoff * 2, backoff_max)
+
+            # Backoff com jitter
+            jitter = random.uniform(0, 0.5)
+            sleep_for = min(backoff, backoff_max) + jitter
+            await asyncio.sleep(sleep_for)
+            backoff = min(backoff * 2, backoff_max)
 
     async def _handle_message(self, message: str):
         """

@@ -226,7 +226,8 @@ class EvaluateActiveStrategiesUseCase:
             out_above_streak = int(current.get("out_above_streak", 0))
             out_below_streak = int(current.get("out_below_streak", 0))
             pool_type_cur = current.get("pool_type", "standard")
-
+            mode_on_open_cur = current.get("mode_on_open", "")
+            
             trigger: Optional[str] = None
 
             # 2) atualiza streaks de breakout e verifica confirmação
@@ -250,7 +251,13 @@ class EvaluateActiveStrategiesUseCase:
                 vol_th = params.get("vol_high_threshold_pct")
                 if (atr_pct is not None and vol_th is not None and atr_pct > float(vol_th)) and pool_type_cur != "high_vol":
                     trigger = "high_vol"
-
+            
+            # 3.1) Reabre high vol do lado certo
+            if pool_type_cur == "high_vol" and mode_on_open_cur == "trend_down" and ema_f - ema_s > 10:
+                trigger = "high_vol"
+            if pool_type_cur == "high_vol" and mode_on_open_cur == "trend_up" and ema_f - ema_s < -10:
+                trigger = "high_vol"
+            
             # 4) tiers — apenas se in-range e sem trigger ainda
             if not trigger and (Pa_cur < P < Pb_cur) and (i_since_open >= cooloff):
                 tiers: List[Dict] = list(params.get("tiers", []))

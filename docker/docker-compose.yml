@@ -1,12 +1,10 @@
-version: "3.9"
-
 services:
   mongo:
     image: mongo:6.0
     container_name: mongo
     restart: always
-    ports:
-      - "27017:27017"
+    # ports:
+    #   - "27017:27017"
     volumes:
       - mongo_data:/data/db
     healthcheck:
@@ -14,11 +12,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    network_mode: "host" 
 
   api-signals:
     build:
       context: ../
       dockerfile: ./apps/api-signals/Dockerfile
+      network: host
     container_name: api-signals
     restart: always
     env_file:
@@ -40,6 +40,7 @@ services:
       --reload-exclude "venv/*"
       --reload-exclude ".git/*"
       --reload-exclude "data/*"
+    network_mode: "host"
 
 volumes:
   mongo_data:

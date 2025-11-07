@@ -14,7 +14,7 @@ class PipelineHttpClient:
     This client does *no* strategy logic, only raw HTTP.
     """
 
-    def __init__(self, base_url: str, timeout_sec: float = 55.0):
+    def __init__(self, base_url: str, timeout_sec: float = 180.0):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_sec
         self._logger = logging.getLogger(self.__class__.__name__)
